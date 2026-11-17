@@ -1,0 +1,1031 @@
+@import "tailwindcss";
+
+/* Only the weights the design uses: DM Sans 400/500/700 for text and UI, Bricolage Grotesque 800 for headings.
+   Fontsource faces use font-display: swap. */
+@import "@fontsource/dm-sans/latin-400.css";
+@import "@fontsource/dm-sans/latin-500.css";
+@import "@fontsource/dm-sans/latin-700.css";
+@import "@fontsource/bricolage-grotesque/latin-800.css";
+
+/* Urdu face: one weight only, subset to the Urdu alphabet by scripts/subset-urdu-font.py (100 KB instead of 2 x 157 KB). */
+@font-face {
+  font-family: "Noto Nastaliq Urdu";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./assets/fonts/noto-nastaliq-urdu-400.woff2") format("woff2");
+}
+
+/* ======================================================================
+   DESIGN TOKENS. Colours: src/brand/theme.css, generated from src/brand/brand.config.ts (the one file for colours).
+   Everything else (type, spacing, shape, shadow) is here. px, not rem: the root font size is 18px.
+   ====================================================================== */
+@import "./brand/theme.css";
+
+@theme {
+  /* ---- Shape ---- */
+  --radius-inner: 12px; /* inputs, small things, a photo inside a card */
+  --radius-card: 20px; /* cards */
+  --radius-pill: 999px; /* buttons, badges, chips */
+  --radius-tile: 28px; /* a multi-line choice pill (delivery area) */
+  --radius-sheet: 24px; /* the top corners of a bottom sheet */
+  --radius-panel: 24px; /* one large card holding a whole section (Find us) */
+
+  /* ---- Shadows: both tinted with ink, never grey ---- */
+  --shadow-soft: 0 1px 2px color-mix(in srgb, var(--color-ink) 6%, transparent),
+    0 10px 28px -12px color-mix(in srgb, var(--color-ink) 16%, transparent); /* resting */
+  --shadow-raised: 0 2px 4px color-mix(in srgb, var(--color-ink) 8%, transparent),
+    0 20px 44px -14px color-mix(in srgb, var(--color-ink) 24%, transparent); /* hover / lifted */
+
+  /* ---- Layout ---- */
+  --container-page: 1200px; /* the content width */
+  --spacing-gutter: clamp(16px, 4vw, 40px); /* the page's side padding: px-gutter */
+  --container-page-padded: calc(1200px + 2 * clamp(16px, 4vw, 40px)); /* page + gutter, for a container that carries px-gutter */
+  --spacing-section: clamp(56px, 8vw, 112px); /* vertical padding of a page section: py-section */
+  /* A 4px scale for new work, in px because the root is 18px (Tailwind's own --spacing is 0.25rem = 4.5px here). */
+  --spacing-1x: 4px;
+  --spacing-2x: 8px;
+  --spacing-3x: 12px;
+  --spacing-4x: 16px;
+  --spacing-5x: 20px;
+  --spacing-6x: 24px;
+  --spacing-8x: 32px;
+  --spacing-10x: 40px;
+  --spacing-12x: 48px;
+  --spacing-16x: 64px;
+  --spacing-touch: 48px; /* the default height of buttons, chips and fields (WCAG target size) */
+  --spacing-tap: 48px; /* the minimum tap target, for round icon buttons where space is tight */
+
+  /* ---- Type ---- */
+  --font-urdu: "Noto Nastaliq Urdu", "DM Sans", system-ui, sans-serif;
+  --font-sans: "DM Sans", system-ui, sans-serif;
+  --font-serif: "Bricolage Grotesque", system-ui, sans-serif;
+  /* Fluid heading scale, 360px -> 1280px viewport. Urdu gets its own (smaller) values below: Nastaliq is tall. */
+  --text-h1: clamp(40px, 21.2px + 5.22vw, 88px);
+  --text-h1--line-height: 1.05;
+  --text-h1--letter-spacing: -0.03em;
+  --text-h2: clamp(30px, 19.8px + 2.83vw, 56px);
+  --text-h2--line-height: 1.08;
+  --text-h2--letter-spacing: -0.025em;
+  --text-h3: clamp(20px, 18.4px + 0.43vw, 24px);
+  --text-h3--line-height: 1.1;
+  --text-h3--letter-spacing: -0.02em;
+  --text-button: 15px;
+  --text-eyebrow: 13px;
+
+  /* ---- Motion: ONE easing curve. In @theme so Tailwind's `ease-out` and every bare `transition-*` utility use it too
+     (default 200ms); durations are the --dur-* tokens in :root below, all 150-250ms for transitions. ---- */
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --default-transition-duration: 200ms;
+  --default-transition-timing-function: var(--ease-out);
+}
+
+/* ---- Tones: what a fill, heading, accent and focus ring look like on a light or a dark (forest/ink) surface.
+   A dark surface carries .tone-dark; a light island inside it (a card, a dialog) carries .tone-light or is a .card. ---- */
+:root,
+.tone-light,
+.card,
+dialog:not(.tone-dark) {
+  --tone-fill: var(--color-action); /* primary button, badge, icon circle: forest */
+  --tone-fill-hover: var(--color-action-hover);
+  --tone-on-fill: var(--color-on-action); /* cream */
+  --tone-strong: var(--color-heading); /* secondary/ghost buttons: forest */
+  --tone-heading: var(--color-heading);
+  --tone-accent: var(--color-heading-accent); /* the accent word of a heading: tomato, large text only */
+  --tone-eyebrow: var(--color-accent); /* deep green */
+  --tone-ring: var(--color-heading); /* focus ring: forest, 6.3:1 on cream */
+  --tone-icon-bg: var(--color-surface); /* round icon buttons (header) */
+  --tone-icon-bg-hover: var(--color-band);
+  --tone-icon-fg: var(--color-ink);
+  --tone-icon-border: color-mix(in srgb, var(--color-ink) 14%, transparent);
+  --tone-nav: var(--color-muted); /* text nav links; the current page is --tone-nav-current and bold */
+  --tone-nav-current: var(--color-ink);
+}
+.tone-dark {
+  --tone-fill: var(--color-promo); /* lime, ink text: 10.6:1 */
+  --tone-fill-hover: color-mix(in srgb, var(--color-promo) 80%, var(--color-cream));
+  --tone-on-fill: var(--color-ink);
+  --tone-strong: var(--color-on-action);
+  --tone-heading: var(--color-on-action);
+  --tone-accent: var(--color-promo);
+  --tone-eyebrow: var(--color-promo);
+  --tone-ring: var(--color-promo); /* lime: 6.0:1 on forest, 10.6:1 on ink */
+  --tone-icon-bg: transparent;
+  --tone-icon-bg-hover: color-mix(in srgb, var(--color-on-action) 12%, transparent);
+  --tone-icon-fg: var(--color-on-action);
+  --tone-icon-border: color-mix(in srgb, var(--color-on-action) 45%, transparent);
+  --tone-nav: var(--color-on-action);
+  --tone-nav-current: var(--color-on-action);
+}
+
+html {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 18px;
+  line-height: 1.55;
+  -webkit-text-size-adjust: 100%;
+}
+/* Nastaliq is tall: generous line-height and block padding so nothing is clipped. */
+html[lang="ur"] {
+  font-family: var(--font-urdu);
+  line-height: 2;
+  /* Only the regular Nastaliq face is shipped: never fake a bold (it smears the letter joins). */
+  font-synthesis: none;
+  --text-h1: clamp(32px, 22.6px + 2.61vw, 56px);
+  --text-h2: clamp(26px, 20.5px + 1.52vw, 40px);
+}
+/* Letter-spacing breaks the joins of Nastaliq: none anywhere on an Urdu page (unlayered, so it beats the tracking utilities). */
+html[lang="ur"] :where(*) {
+  letter-spacing: normal;
+}
+/* In the base layer so a utility on a heading (a colour, a size) wins. Sizes come from text-h1/h2/h3. */
+@layer base {
+  h1,
+  h2,
+  h3 {
+    color: var(--tone-heading);
+    font-family: var(--font-serif);
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+    /* Even line lengths: a heading never ends on one orphaned word. */
+    text-wrap: balance;
+  }
+}
+/* The accent word of a two-tone heading: tomato on light, lime on dark, upright (Bricolage Grotesque has no italic and
+   we never fake one). .accent is its own line (the hero); .accent-inline stays on the line when it fits. */
+.accent,
+.accent-inline {
+  color: var(--tone-accent);
+  font-style: normal;
+}
+.accent {
+  display: block;
+}
+/* Anchored home sections (Find us) stop below the sticky header. */
+.home-sections > section[id] {
+  scroll-margin-top: 5rem;
+}
+
+/* A card or tile title that is a real heading but uses the UI sans in Latin (the base rule above makes h1-h3 serif). Urdu keeps Nastaliq via the rule below. */
+.heading-sans {
+  font-family: var(--font-sans);
+  letter-spacing: normal;
+}
+html[lang="ur"] h1,
+html[lang="ur"] h2,
+html[lang="ur"] h3,
+html[lang="ur"] .heading-sans,
+html[lang="ur"] .font-serif {
+  font-family: var(--font-urdu);
+  font-weight: 400;
+  line-height: 2.1;
+  padding-block: 0.15em;
+}
+body {
+  margin: 0;
+  min-width: 320px;
+  background: var(--color-canvas);
+}
+/* Never a sideways page scroll at any width. `clip`, not `hidden`: it makes no scroll container, so sticky still works. */
+html,
+body {
+  overflow-x: clip;
+}
+/* 2px ring with a 2px offset: forest on light surfaces, lime on dark ones (.tone-dark), so it shows on cream and green alike. */
+:focus-visible {
+  outline: 2px solid var(--tone-ring);
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    /* one pass only: an infinite 0.01ms animation (skeleton pulse, spinner) would flicker instead of rest */
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Urdu body text is never below 18px (the root size), whatever text-sm / text-xs says. */
+html[lang="ur"] :where(.text-sm, .text-xs) {
+  font-size: 1rem;
+}
+
+/* Tailwind text-* utilities set a tight line-height; Nastaliq needs ~2 everywhere or lines collide. */
+html[lang="ur"] :where(p, span, li, a, button, h1, h2, h3, dt, dd) {
+  line-height: 2;
+}
+
+/* Prices and other numbers: DM Sans 700 with tabular figures (also on an Urdu page, where the digits are Western). */
+.num {
+  font-family: var(--font-sans);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A small uppercase line above a section title (SectionHeader's eyebrow). Urdu has no capitals: plain Nastaliq at 18px. */
+.eyebrow {
+  color: var(--tone-eyebrow);
+  font-family: var(--font-sans);
+  font-size: var(--text-eyebrow);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+html[lang="ur"] .eyebrow {
+  font-family: var(--font-urdu);
+  font-size: 1rem;
+  font-weight: 400;
+}
+
+/* ---- Button sizes: the only place these numbers live. ---- */
+:root {
+  --btn-height: var(--spacing-touch); /* 48px: every size is at least this */
+  --btn-lg-height: 56px;
+}
+
+/* ---- Buttons (components/ui/Button.tsx / buttonClass()): 48px+ pills, DM Sans 700 15px.
+   primary: forest + cream on light, lime + ink on dark (from the tone). secondary: outline. ghost: text only. ---- */
+.btn {
+  display: inline-flex;
+  min-height: var(--btn-height);
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  border-radius: var(--radius-pill);
+  padding: 0.35rem 1.6rem;
+  font-size: var(--text-button);
+  font-weight: 700;
+  line-height: 1.2;
+  text-align: center;
+  text-decoration: none;
+  transition:
+    transform var(--dur-press) var(--ease-out),
+    background-color var(--dur-press) var(--ease-out);
+}
+/* Urdu button labels stay at 18px (the Urdu minimum). */
+html[lang="ur"] .btn {
+  font-size: 1rem;
+}
+.btn:active:not(:disabled, [aria-disabled="true"]) {
+  transform: scale(0.98);
+}
+.btn:disabled,
+.btn[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+.btn-lg {
+  min-height: var(--btn-lg-height);
+  padding-inline: 2rem;
+}
+/* The small "See all" pill: tighter, still a 48px target. */
+.btn-sm {
+  gap: 0.4rem;
+  padding: 0.2rem 1.1rem;
+}
+.btn-primary {
+  background: var(--tone-fill);
+  color: var(--tone-on-fill);
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--tone-fill-hover);
+}
+/* Outline pill. The colour is in the components layer so a utility (text-ink, text-on-action) can override it. */
+.btn-secondary {
+  border: 1.5px solid currentColor;
+}
+.btn-secondary:hover:not(:disabled),
+.btn-ghost:hover:not(:disabled) {
+  background: color-mix(in srgb, currentColor 8%, transparent);
+}
+@layer components {
+  .btn-secondary,
+  .btn-ghost {
+    color: var(--tone-strong);
+  }
+  /* A filled badge or icon circle: the same fill as the primary button on this surface. */
+  .tone-fill {
+    background: var(--tone-fill);
+    color: var(--tone-on-fill);
+  }
+  /* A round icon button (header language, call, cart): 48px circle (min 44px), a hairline edge, the surface's colours. */
+  .icon-btn {
+    position: relative;
+    display: inline-flex;
+    min-width: var(--spacing-tap);
+    height: var(--spacing-tap);
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--tone-icon-border);
+    border-radius: var(--radius-pill);
+    background: var(--tone-icon-bg);
+    color: var(--tone-icon-fg);
+    transition:
+      transform var(--dur-press) var(--ease-out),
+      background-color var(--dur-press) var(--ease-out),
+      color var(--dur-header) var(--ease-out),
+      border-color var(--dur-header) var(--ease-out);
+  }
+  .icon-btn:hover {
+    background: var(--tone-icon-bg-hover);
+  }
+  .icon-btn:active {
+    transform: scale(0.95);
+  }
+  /* Text nav links: muted with the current page in ink and bold on light, cream on dark (bold marks the current page). */
+  .nav-link {
+    color: var(--tone-nav);
+    font-weight: 500;
+    transition: color var(--dur-header) var(--ease-out);
+  }
+  .nav-link:hover,
+  .nav-link[aria-current="page"] {
+    color: var(--tone-nav-current);
+  }
+  .nav-link[aria-current="page"] {
+    font-weight: 700;
+  }
+  /* The heading accent colour of this surface (the hand-drawn ring around a price). */
+  .tone-accent {
+    color: var(--tone-accent);
+  }
+}
+
+/* ---- Cards: white, 20px, the resting shadow, no border. Lift (raised shadow) on hover only where hover exists. ---- */
+.card {
+  border-radius: var(--radius-card);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-soft);
+  color: var(--color-ink);
+}
+@media (hover: hover) {
+  .card-lift {
+    transition:
+      transform var(--dur-sheet) var(--ease-out),
+      box-shadow var(--dur-sheet) var(--ease-out);
+  }
+  .card-lift:hover {
+    transform: translateY(-4px);
+    box-shadow: var(--shadow-raised);
+  }
+}
+
+/* ---- Home sections: clamp(56px, 8vw, 112px) of air, the page gutter at the sides.
+   Band rhythm (components/home/BelowFold.tsx): green hero | cream, white, cream... | green "Why" | ...white, cream | ink footer.
+   The colours follow what is actually rendered (a section with no data renders nothing), so two neighbours never share a
+   background: the run after the hero counts from its start (cream first, next to the green hero), the run after "Why"
+   counts from its end (cream last, so it always ends cream above the ink footer). ---- */
+.home-sections > section {
+  padding-block: var(--spacing-section);
+  padding-inline: var(--spacing-gutter);
+}
+/* --next-bg is what the section after this one paints (the offer banner's wave edge hands over to it). */
+.home-bands-start > section:nth-child(odd) {
+  background: var(--color-canvas);
+  --next-bg: var(--color-surface);
+}
+.home-bands-start > section:nth-child(even) {
+  background: var(--color-surface);
+  --next-bg: var(--color-canvas);
+}
+.home-bands-start > section:last-child {
+  --next-bg: var(--color-forest); /* "Why" follows */
+}
+.home-bands-end > section:nth-last-child(odd) {
+  background: var(--color-canvas);
+  --next-bg: var(--color-surface);
+}
+.home-bands-end > section:nth-last-child(even) {
+  background: var(--color-surface);
+  --next-bg: var(--color-canvas);
+}
+/* The green band ("Why Zoryx"), always green wherever it lands. It also carries .tone-dark: cream heading, lime accent word and fills. */
+.home-sections > section[data-band="forest"] {
+  background: var(--color-forest);
+  color: var(--color-on-action);
+}
+
+/* ---- Feature card on a green band (components/ui/FeatureCard.tsx): translucent cream, hairline cream border. ---- */
+.feature-card {
+  border: 1px solid color-mix(in srgb, var(--color-cream) 15%, transparent);
+  border-radius: var(--radius-card);
+  background: color-mix(in srgb, var(--color-cream) 8%, transparent); /* cream text on it: 5.2:1 */
+  color: var(--color-on-action);
+  transition: border-color var(--dur-sheet) var(--ease-out);
+}
+.feature-card .icon-circle-turn {
+  transition: transform var(--dur-sheet) var(--ease-out);
+}
+@media (hover: hover) {
+  .feature-card:hover {
+    border-color: color-mix(in srgb, var(--color-cream) 40%, transparent);
+  }
+  .feature-card:hover .icon-circle-turn {
+    transform: rotate(6deg);
+  }
+}
+
+/* ---- "How to order" stepper (HowSection in components/home/Sections.tsx). Each step but the last draws a 2px dashed
+   forest connector from the centre of its 56px circle to the centre of the next one, behind the circles: down under
+   768px (a vertical stepper), across from 768px (three columns). ---- */
+.how-steps {
+  --how-gap: 32px;
+  --how-circle: 56px;
+  gap: var(--how-gap);
+}
+.how-step:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  inset-inline-start: calc(var(--how-circle) / 2 - 1px);
+  top: calc(var(--how-circle) / 2);
+  bottom: calc(-1 * (var(--how-gap) + var(--how-circle) / 2));
+  border-inline-start: 2px dashed color-mix(in srgb, var(--color-forest) 40%, transparent);
+  pointer-events: none;
+}
+@media (min-width: 768px) {
+  .how-steps {
+    --how-gap: 24px;
+  }
+  .how-step:not(:last-child)::after {
+    inset-inline-start: 50%;
+    top: calc(var(--how-circle) / 2 - 1px);
+    bottom: auto;
+    width: calc(100% + var(--how-gap));
+    border-inline-start: 0;
+    border-top: 2px dashed color-mix(in srgb, var(--color-forest) 40%, transparent);
+  }
+}
+/* Scroll-in, once (lib/useRevealOnce on the list): step 1 rises in, its line draws towards step 2, step 2 rises, the
+   next line draws, step 3 rises. Only with motion allowed: under reduced motion it is all simply there. */
+@keyframes how-draw-down {
+  from {
+    clip-path: inset(0 0 100% 0);
+  }
+  to {
+    clip-path: inset(0);
+  }
+}
+@keyframes how-draw-across {
+  from {
+    clip-path: inset(0 100% 0 0);
+  }
+  to {
+    clip-path: inset(0);
+  }
+}
+@keyframes how-draw-across-rtl {
+  from {
+    clip-path: inset(0 0 0 100%);
+  }
+  to {
+    clip-path: inset(0);
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  [data-reveal="pending"] .how-step {
+    opacity: 0;
+  }
+  [data-reveal="pending"] .how-step::after {
+    clip-path: inset(0 0 100% 0);
+  }
+  [data-reveal="done"] .how-step {
+    animation: reveal-rise var(--dur-reveal) var(--ease-out) both;
+  }
+  [data-reveal="done"] .how-step::after {
+    animation: how-draw-down var(--dur-reveal) var(--ease-out) both;
+  }
+  /* The sequence: step n at 2(n-1) beats, the line after it at 2n-1 beats. */
+  [data-reveal="done"] .how-step:nth-child(1)::after {
+    animation-delay: var(--stagger-step);
+  }
+  [data-reveal="done"] .how-step:nth-child(2) {
+    animation-delay: calc(var(--stagger-step) * 2);
+  }
+  [data-reveal="done"] .how-step:nth-child(2)::after {
+    animation-delay: calc(var(--stagger-step) * 3);
+  }
+  [data-reveal="done"] .how-step:nth-child(3) {
+    animation-delay: calc(var(--stagger-step) * 4);
+  }
+  @media (min-width: 768px) {
+    [data-reveal="pending"] .how-step::after {
+      clip-path: inset(0 100% 0 0);
+    }
+    [dir="rtl"] [data-reveal="pending"] .how-step::after {
+      clip-path: inset(0 0 0 100%);
+    }
+    [data-reveal="done"] .how-step::after {
+      animation-name: how-draw-across;
+    }
+    [dir="rtl"] [data-reveal="done"] .how-step::after {
+      animation-name: how-draw-across-rtl;
+    }
+  }
+}
+
+/* ---- Scroll-in: the items of a [data-reveal] container fade and rise once, one after another (lib/useRevealOnce).
+   Only with motion allowed, and only once JS has marked the container "pending", so without JS the content just shows. ---- */
+@keyframes reveal-rise {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  [data-reveal="pending"] .reveal-item {
+    opacity: 0;
+  }
+  [data-reveal="done"] .reveal-item {
+    animation: reveal-rise var(--dur-reveal) var(--ease-out) both;
+  }
+  [data-reveal="done"] .reveal-item:nth-child(2) {
+    animation-delay: var(--stagger);
+  }
+  [data-reveal="done"] .reveal-item:nth-child(3) {
+    animation-delay: calc(var(--stagger) * 2);
+  }
+  [data-reveal="done"] .reveal-item:nth-child(n + 4) {
+    animation-delay: calc(var(--stagger) * 3);
+  }
+}
+
+/* ---- Product card (components/ui/ProductCard.tsx) ---- */
+/* No photo (or a broken one): a cream-to-sunflower wash with a faint forest food icon. Also the base a photo fades in over. */
+.photo-placeholder {
+  background: linear-gradient(
+    135deg,
+    var(--color-cream) 0%,
+    color-mix(in srgb, var(--color-sunflower) 30%, var(--color-cream)) 100%
+  );
+}
+/* The whole card shows the focus ring when anything inside it has keyboard focus. */
+.product-card:has(:focus-visible) {
+  outline: 2px solid var(--tone-ring);
+  outline-offset: 2px;
+}
+/* Pointer devices: the card lifts (card-lift) and the photo grows a little inside its clipped frame. */
+@media (hover: hover) {
+  .product-card .photo-frame img {
+    transition:
+      opacity var(--dur-sheet) var(--ease-out),
+      transform var(--dur-sheet) var(--ease-out);
+  }
+  .product-card:hover .photo-frame img {
+    transform: scale(1.04);
+  }
+}
+/* The add button after a tap: a quick scale with a check (visual only; the cart is updated at the same moment as before). */
+@keyframes add-done {
+  0% {
+    transform: scale(1);
+  }
+  45% {
+    transform: scale(1.15);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+.add-done {
+  animation: add-done var(--dur-sheet) var(--ease-out);
+}
+
+/* The small "added" pop on the + button. */
+@keyframes pop {
+  0% {
+    transform: scale(0.8);
+  }
+  60% {
+    transform: scale(1.12);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+.pop {
+  animation: pop var(--dur-sheet, 220ms) var(--ease-out, ease-out);
+}
+@media (prefers-reduced-motion: reduce) {
+  .product-card:hover .photo-frame img {
+    transform: none !important;
+  }
+  .pop,
+  .card-lift,
+  .btn {
+    animation: none !important;
+    transition: none !important;
+    transform: none !important;
+  }
+}
+
+/* The hero rider: rises in once (the reveal duration and the one curve), then floats. Both end at rest, so reduced motion (one 0.01ms pass) simply shows it standing still. */
+@keyframes rider-in {
+  from {
+    opacity: 0;
+    transform: translateY(32px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes rider-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+.rider-in {
+  animation: rider-in var(--dur-reveal) var(--ease-out) 200ms both;
+}
+.rider-float {
+  animation: rider-float 4s ease-in-out 1s infinite;
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* In the components layer so utilities like lg:grid and md:overflow-visible can turn the row into a grid on wide screens. */
+@layer components {
+  .snap-row {
+    display: flex;
+    gap: 1rem;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    padding-block: 0.5rem 1rem;
+    scrollbar-width: thin;
+  }
+  .snap-row > * {
+    scroll-snap-align: start;
+  }
+}
+
+/* ---- Floating WhatsApp (components/WhatsAppButton.tsx): 56px, bottom-end, 16px from the edges plus the safe-area
+   insets, above everything on the page. A 2px cream ring gives it an edge on the green bands too (forest on forest has
+   none); the focus ring sits right outside it in ink, so it shows on every background. --wa-lift raises it above a bottom
+   bar (the menu cart bar, the order page's bar). It steps aside while the footer is in view (the footer has its own
+   WhatsApp link), so it never covers the footer's links and buttons. ---- */
+.wa-float {
+  position: fixed;
+  z-index: 40;
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px) + var(--wa-lift, 0px));
+  inset-inline-end: calc(16px + env(safe-area-inset-right, 0px));
+  display: inline-flex;
+  width: 56px;
+  height: 56px;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-pill);
+  background: var(--color-action);
+  color: var(--color-promo); /* lime on forest: 6.0:1 */
+  box-shadow:
+    0 0 0 2px var(--color-on-action),
+    var(--shadow-soft);
+  transition:
+    transform var(--dur-press) var(--ease-out),
+    box-shadow var(--dur-press) var(--ease-out),
+    opacity var(--dur-header) var(--ease-out),
+    visibility 0s linear 0s;
+}
+[dir="rtl"] .wa-float {
+  inset-inline-end: calc(16px + env(safe-area-inset-left, 0px));
+}
+.wa-float:hover {
+  background: var(--color-action-hover);
+  box-shadow:
+    0 0 0 2px var(--color-on-action),
+    var(--shadow-raised);
+}
+.wa-float:active {
+  transform: scale(0.95);
+}
+.wa-float:focus-visible {
+  outline: 2px solid var(--color-ink);
+  outline-offset: 2px;
+}
+.wa-float.wa-lift {
+  --wa-lift: 92px;
+}
+/* Out of the way: faded, unclickable and out of the tab order (visibility flips after the fade). */
+.wa-float.wa-away {
+  opacity: 0;
+  transform: translateY(8px);
+  pointer-events: none;
+  visibility: hidden;
+  transition:
+    transform var(--dur-header) var(--ease-out),
+    opacity var(--dur-header) var(--ease-out),
+    visibility 0s linear var(--dur-header);
+}
+/* One gentle attention pulse, 3s after it appears: a cream ring swells out and fades. Never repeats; none under reduced motion. */
+@keyframes wa-pulse {
+  from {
+    opacity: 0.7;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.6);
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .wa-float::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border: 2px solid var(--color-action);
+    border-radius: inherit;
+    opacity: 0;
+    pointer-events: none;
+    animation: wa-pulse 1.2s var(--ease-out) 3s 1 both;
+  }
+}
+
+/* index.html <noscript> note (a class, not an inline style, so the CSP needs no style-src 'unsafe-inline'). */
+.noscript-note {
+  padding: 24px;
+  font: 20px/2 sans-serif;
+  text-align: center;
+}
+
+/* ======================================================================
+   Phone app shell (< 768px): safe areas, app-like touch behaviour, page transitions.
+   Components: src/components/mobile/. Above 768px none of this applies.
+   Safe-area insets are physical (notch / home indicator), so the few left/right uses are too.
+   ====================================================================== */
+:root {
+  --sab: env(safe-area-inset-bottom, 0px);
+  --header-h: 64px; /* the website header; the phone shell overrides it with the app bar */
+  --tabbar-h: 0px;
+  --dir: 1; /* +1 in LTR, -1 in RTL: slides mirror with it */
+  /* Motion tokens: every phone animation uses these. Reduced motion zeroes them (see below). */
+  --dur-press: 150ms; /* presses, small state changes, tab cross-fade */
+  --dur-header: 200ms; /* the website header turning solid on scroll */
+  --dur-reveal: 500ms; /* a section's items fading and rising in on scroll */
+  --stagger: 90ms; /* the gap between those items */
+  --stagger-step: 220ms; /* one beat of the "How to order" sequence (step, line, step, line, step) */
+  --dur-sheet: 220ms; /* sheets, full-screen cart / checkout pages, pops */
+  --dur-page: 300ms; /* page-to-page transitions */
+  --dur-fill: 700ms; /* the order progress line filling */
+  /* --ease-out (the one curve) is in @theme at the top. */
+}
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-press: 0ms;
+    --dur-header: 0ms;
+    --dur-reveal: 0ms;
+    --stagger: 0ms;
+    --stagger-step: 0ms;
+    --dur-sheet: 0ms;
+    --dur-page: 0ms;
+    --dur-fill: 0ms;
+  }
+}
+:root[dir="rtl"] {
+  --dir: -1;
+}
+/* Installed to the home screen: keep the tab bar off the very edge even on phones with no home-indicator inset. */
+:root[data-standalone] {
+  --sab: max(env(safe-area-inset-bottom, 0px), 8px);
+}
+
+@media (max-width: 767px) {
+  :root {
+    --header-h: calc(56px + env(safe-area-inset-top, 0px));
+    --tabbar-h: calc(56px + var(--sab));
+  }
+  html {
+    touch-action: manipulation; /* no double-tap zoom, no 300ms tap delay */
+    -webkit-tap-highlight-color: transparent;
+  }
+  html,
+  body {
+    overflow-x: clip; /* never a sideways page scroll */
+    overscroll-behavior: contain; /* a stray swipe at the top does not pull-to-refresh the page */
+  }
+  /* Buttons and chrome are not text: no accidental selection / callout on long-press. */
+  .app-shell :where(button, nav, header, [role="button"]) {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
+  /* ...but the order code, account numbers, address and hours can be selected and copied. */
+  .app-shell .selectable,
+  .app-shell .selectable * {
+    -webkit-user-select: text;
+    user-select: text;
+  }
+  .overflow-y-auto,
+  .overflow-x-auto {
+    -webkit-overflow-scrolling: touch;
+  }
+  /* Content is never left behind the fixed bars: anchors, focus and scrollIntoView stop below the app bar and above the
+     tab bar and the mini-cart pill. */
+  html {
+    scroll-padding-top: var(--header-h);
+    scroll-padding-bottom: calc(var(--tabbar-h) + 4.5rem);
+  }
+  /* Press state on every tappable thing (zero specificity: a component's own style wins). */
+  :where(button, a[href], summary, [role="button"], [role="radio"], [role="switch"]) {
+    transition: transform var(--dur-press) var(--ease-out);
+  }
+  :where(button, a[href], summary, [role="button"], [role="radio"], [role="switch"]):where(:not(:disabled)):active {
+    transform: scale(0.97);
+  }
+  /* Sheets rise, full-screen pages slide in from the reading end; the backdrop fades. */
+  dialog.sheet-rise[open] {
+    animation: sheet-up var(--dur-sheet) var(--ease-out);
+  }
+  dialog.sheet-page[open] {
+    animation: sheet-slide var(--dur-sheet) var(--ease-out);
+  }
+  dialog.sheet-rise[open]::backdrop,
+  dialog.sheet-page[open]::backdrop {
+    animation: backdrop-in var(--dur-sheet) ease-out;
+  }
+  /* The tab bar and app bar stay put while the page slides (they get their own view-transition groups). */
+  .app-shell #appbar {
+    view-transition-name: appbar;
+  }
+  .app-shell .tabbar {
+    view-transition-name: tabbar;
+  }
+  /* A sheet is open: the tab bar steps aside (the sheet covers the bottom edge). */
+  html[data-sheet-open] .tabbar,
+  html[data-sheet-open] .minicart {
+    display: none;
+  }
+}
+
+/* The current order step: a soft pulsing sunflower ring (lime is never used on white) (reduced motion: the global rule ends it after one pass). */
+@keyframes step-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-sunflower) 45%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 9px color-mix(in srgb, var(--color-sunflower) 15%, transparent);
+  }
+}
+.step-now {
+  animation: step-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes sheet-up {
+  from {
+    transform: translateY(100%);
+  }
+}
+@keyframes sheet-slide {
+  from {
+    transform: translateX(calc(var(--dir) * 100%));
+  }
+}
+@keyframes backdrop-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+}
+.toast {
+  animation: toast-in var(--dur-sheet, 220ms) var(--ease-out, ease-out);
+}
+/* The loading splash: the brand mark breathing softly. */
+@keyframes splash-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.08);
+    opacity: 0.75;
+  }
+}
+.splash-mark {
+  animation: splash-breathe 1.6s ease-in-out infinite;
+}
+/* The toast host that lives on the page steps aside while a sheet (which carries its own) is open. */
+html[data-sheet-open] .toast-page {
+  display: none;
+}
+
+/* Tab labels: 14px+ Latin, 18px Urdu (the Urdu floor), with a line-height that still fits the 56px bar. */
+.tab-label {
+  font-size: 0.875rem;
+  line-height: 1.2;
+}
+html[lang="ur"] .tab-label {
+  font-size: 1rem;
+  line-height: 1.55; /* Nastaliq glyphs reach well below the baseline: less than this clips them */
+  margin-top: -5px; /* ...and they hang below their line box, so the label sits a little higher to stay inside the 56px bar */
+}
+
+/* ---- Page transitions: 150-300 ms. Forward slides in from the reading-end edge (mirrored in RTL), back reverses, tabs cross-fade. ---- */
+@keyframes nav-in-forward {
+  from {
+    transform: translateX(calc(var(--dir) * 28%));
+    opacity: 0;
+  }
+}
+@keyframes nav-out-forward {
+  to {
+    transform: translateX(calc(var(--dir) * -12%));
+    opacity: 0;
+  }
+}
+@keyframes nav-in-back {
+  from {
+    transform: translateX(calc(var(--dir) * -12%));
+    opacity: 0;
+  }
+}
+@keyframes nav-out-back {
+  to {
+    transform: translateX(calc(var(--dir) * 28%));
+    opacity: 0;
+  }
+}
+@keyframes nav-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes nav-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+/* View Transitions API (Chrome, Edge, Safari 18+). */
+html[data-vt]::view-transition-old(root),
+html[data-vt]::view-transition-new(root) {
+  animation-duration: var(--dur-page);
+  animation-timing-function: var(--ease-out);
+  animation-fill-mode: backwards;
+}
+html[data-nav="forward"]::view-transition-old(root) {
+  animation-name: nav-out-forward;
+}
+html[data-nav="forward"]::view-transition-new(root) {
+  animation-name: nav-in-forward;
+}
+html[data-nav="back"]::view-transition-old(root) {
+  animation-name: nav-out-back;
+}
+html[data-nav="back"]::view-transition-new(root) {
+  animation-name: nav-in-back;
+}
+html[data-nav="tab"]::view-transition-old(root) {
+  animation-name: nav-fade-out;
+  animation-duration: var(--dur-press);
+}
+html[data-nav="tab"]::view-transition-new(root) {
+  animation-name: nav-fade-in;
+  animation-duration: var(--dur-press);
+}
+@media (prefers-reduced-motion: reduce) {
+  :where(button, a[href], summary, [role="button"], [role="radio"], [role="switch"]):active {
+    transform: none !important;
+  }
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
+}
+
+/* Fallback where there is no View Transitions API: the new page enters on its own. (Reduced motion: the global rule above ends it at once.) */
+.page-enter[data-enter="forward"] {
+  animation: nav-in-forward var(--dur-page) var(--ease-out) backwards;
+}
+.page-enter[data-enter="back"] {
+  animation: nav-in-back var(--dur-page) var(--ease-out) backwards;
+}
+.page-enter[data-enter="tab"] {
+  animation: nav-fade-in var(--dur-press) var(--ease-out) backwards;
+}

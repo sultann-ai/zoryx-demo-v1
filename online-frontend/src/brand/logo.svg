@@ -1,0 +1,7 @@
+<!-- Zoryx mark. __ACTION__, __ON_ACTION__ and __PROMO__ are filled from brand.config.ts by scripts/make-assets.mjs. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="15" fill="__ACTION__"/>
+  <rect x="16" y="15" width="32" height="8" rx="3" fill="__ON_ACTION__"/>
+  <rect x="16" y="41" width="32" height="8" rx="3" fill="__ON_ACTION__"/>
+  <path d="M44 23 L20 41" stroke="__PROMO__" stroke-width="8" stroke-linecap="round"/>
+</svg>

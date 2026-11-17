@@ -1,0 +1,91 @@
+import { NavLink } from "react-router-dom";
+import { BrandLogo } from "./BrandLogo";
+import { useAuth } from "../context/AuthContext";
+import { useIncomingOrdersContext } from "../context/IncomingOrdersContext";
+import type { NavGroup, NavItem } from "../routes/navItems";
+import { GROUP_ORDER, NAV_ITEMS } from "../routes/navItems";
+import { Icon } from "./shell/icons";
+import { cn } from "./ui/cn";
+
+export function Sidebar() {
+  const { staff } = useAuth();
+  // Only "/incoming-orders" ever has a non-zero count — NavItem has no generic badge
+  // field, so this one destination is special-cased here rather than inventing one for
+  // a single consumer.
+  const { count: incomingOrdersCount } = useIncomingOrdersContext();
+
+  const visibleItems = staff ? NAV_ITEMS.filter((item) => item.allowedRoles.includes(staff.role)) : [];
+
+  const itemsByGroup = new Map<NavGroup, NavItem[]>();
+  for (const item of visibleItems) {
+    const bucket = itemsByGroup.get(item.group);
+    if (bucket) {
+      bucket.push(item);
+    } else {
+      itemsByGroup.set(item.group, [item]);
+    }
+  }
+
+  return (
+    <aside className="flex h-full min-h-0 w-60 shrink-0 flex-col border-r border-border bg-surface-raised">
+      {/* max-height + object-contain rather than a fixed box: whatever shape the
+          real logo turns out to be (wide wordmark, square mark, tall lockup), it
+          scales to fit without ever being stretched or cropped. */}
+      <div className="flex shrink-0 items-center justify-center border-b border-border px-5 py-4">
+        <BrandLogo size={26} />
+      </div>
+      {/* The one scroll area of the sidebar: min-h-0 lets this flex child shrink below its
+          content height (without it the nav grew past the viewport and its bottom items were
+          cut off), overscroll-contain stops a scroll at the end chaining into the page, and the
+          bottom padding keeps the last item clear of the edge on short screens. */}
+      <nav aria-label="Main" className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3 pb-6 [scrollbar-width:thin]">
+        {GROUP_ORDER.map((group) => {
+          const items = itemsByGroup.get(group);
+          if (!items || items.length === 0) {
+            return null;
+          }
+          return (
+            <div key={group} className="mb-4 last:mb-0">
+              <div className="px-3 pb-1 text-meta font-medium text-ink-muted">{group}</div>
+              <ul className="flex list-none flex-col gap-0.5">
+                {items.map((item) => (
+                  <li key={item.to}>
+                    <NavLink
+                      to={item.to}
+                      className={({ isActive }) =>
+                        cn(
+                          "flex items-center gap-2.5 rounded-card border-l-2 px-3 py-2 text-body font-medium no-underline transition-colors",
+                          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-surface",
+                          isActive
+                            ? "border-accent bg-surface text-accent font-semibold"
+                            : "border-transparent text-ink-muted hover:bg-surface hover:text-ink",
+                        )
+                      }
+                    >
+                      {({ isActive }) => (
+                        <>
+                          {/* The forest-green accent is already "primary actions, links, focus
+                              rings, active nav marker" per the plan — reused here for the
+                              active icon too, not a new color introduced for this. */}
+                          <span className={isActive ? "text-accent" : "text-ink-muted"}>
+                            <Icon name={item.icon} />
+                          </span>
+                          <span className="flex-1">{item.label}</span>
+                          {item.to === "/incoming-orders" && incomingOrdersCount > 0 && (
+                            <span className="rounded-full bg-status-warning px-2 py-0.5 text-meta font-semibold text-white">
+                              {incomingOrdersCount}
+                            </span>
+                          )}
+                        </>
+                      )}
+                    </NavLink>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          );
+        })}
+      </nav>
+    </aside>
+  );
+}

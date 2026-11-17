@@ -1,0 +1,182 @@
+/*
+ * Deliberately NOT `@import "tailwindcss";` (which pulls in Preflight, a base
+ * layer that resets native button/input/table/etc. styling document-wide).
+ * Existing screens are plain, unstyled native HTML — Preflight would make
+ * every one of them look broken (invisible button borders, no table
+ * spacing) before they've been migrated to src/components/ui/. Importing
+ * only the theme + utilities layers gives the new components full access to
+ * our tokens as Tailwind classes without touching any existing screen's look.
+ * Re-add `@import "tailwindcss/preflight" layer(base);` once every screen
+ * has been migrated to the shared components.
+ */
+@layer theme, base, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+/*
+ * Zoryx POS — design tokens.
+ * Source of truth: docs/DESIGN_SYSTEM.md (agreed design plan). Don't hand-pick new
+ * colors/sizes in components — extend this theme instead, so every screen
+ * keeps pulling from the same palette/type/spacing system.
+ */
+@theme {
+  /* Base palette */
+  --color-ink: #1b1f27;
+  --color-ink-muted: #5b6472;
+  /* Neutral (not blue-tinted) grey between ink and ink-muted, for secondary text that has to
+     stay easy to read, like a page subtitle. About 9.5:1 on the page background. */
+  --color-ink-soft: #3f4348;
+  --color-surface: #f6f3ea;
+  --color-surface-raised: #ffffff;
+  --color-border: #ddd9cb;
+  --color-accent: #1f4d3a;
+  /* Not part of the named base palette itself — a derived shade for
+     hover/pressed states, since interactive elements need one. */
+  --color-accent-hover: #163a2b;
+  /* Zoryx brand colours — used by the logo (components/BrandLogo.tsx). */
+  --color-brand-forest: #1f4d3a;
+  --color-brand-cream: #f6f1e4;
+  --color-brand-lime: #c6e84a;
+
+  /* Status language — reused everywhere a status appears (Orders, Kitchen
+     Display, Dashboard, Inventory). Each state has three roles:
+       -text : AA-safe on white/surface, for labels
+       (bare): dots, icons, borders, small graphical elements (3:1 is enough)
+       -bg   : pale tint, for a status's background fill */
+  --color-status-neutral: #5b6472;
+  --color-status-neutral-text: #5b6472;
+  --color-status-neutral-bg: #e7e9ec;
+
+  --color-status-active: #2a6f97;
+  --color-status-active-text: #2a6f97;
+  --color-status-active-bg: #e1eef5;
+
+  --color-status-success: #3a7d44;
+  --color-status-success-text: #3a7d44;
+  --color-status-success-bg: #e3f0e5;
+
+  /* Warning's base hue is ~3.6:1 on white — fine for a dot, not for text —
+     so its -text token is a darkened shade that actually clears 4.5:1. */
+  --color-status-warning: #b8792a;
+  --color-status-warning-text: #96611f;
+  --color-status-warning-bg: #f6ebda;
+
+  --color-status-danger: #c0392b;
+  --color-status-danger-text: #c0392b;
+  --color-status-danger-bg: #f8e4e2;
+
+  /* Category tag language — deliberately separate from the status language
+     above (New Order's kitchen-color-coded tiles/tabs). A kitchen's color is
+     an identity, not a state, so it must never share a hue with a status —
+     no blue/green/amber/red here. Six hues spaced ~45-90° apart around the
+     wheel (checked against each other, not just against the status hues —
+     an earlier draft had violet and slate only ~35° apart and was hard to
+     tell apart at a glance; this set keeps every adjacent pair further than
+     that). Assigned deterministically by kitchen id, see
+     newOrder/kitchenTagColor.ts. Each is dark enough to double as text. */
+  --color-tag-gold: #8a6d1d;
+  --color-tag-gold-bg: #f2ecd9;
+  --color-tag-olive: #5b7a1f;
+  --color-tag-olive-bg: #e9efda;
+  --color-tag-teal: #0e7c74;
+  --color-tag-teal-bg: #dff3f1;
+  --color-tag-indigo: #3d4fa0;
+  --color-tag-indigo-bg: #e3e6f5;
+  --color-tag-violet: #7847b0;
+  --color-tag-violet-bg: #ede3f6;
+  --color-tag-magenta: #7a3b84;
+  --color-tag-magenta-bg: #f0e3f2;
+
+  /* Chart data language — Dashboard only. Deliberately new hues, not borrowed
+     from the status or kitchen-tag palettes: a chart bar/line must never be
+     mistaken for a status color, and never for the forest-green accent, which stays
+     reserved for actions/links/the active nav marker, not decoration. -bg is
+     the same pale-tint idea as the status/tag colors, used for area fills. */
+  --color-chart-1: #6b4c7a;
+  --color-chart-1-bg: #ede4ef;
+  --color-chart-2: #3d6b70;
+  --color-chart-2-bg: #e0ecee;
+  /* Extra data hues for the dashboard's donuts and KPI tints. Same rule as above: none
+     borrowed from status, kitchen tags or the forest-green accent. */
+  --color-chart-3: #8a7a3a;
+  --color-chart-3-bg: #f0ecda;
+  --color-chart-4: #4b5d8a;
+  --color-chart-4-bg: #e4e8f2;
+  --color-chart-5: #8f5a3c;
+  --color-chart-5-bg: #f2e6df;
+
+  /* Typography: Bricolage Grotesque for page/section titles only, DM Sans for
+     everything read fast, typed into, or acted on. */
+  --font-heading: "Bricolage Grotesque", ui-sans-serif, sans-serif;
+  --font-body: "DM Sans", ui-sans-serif, sans-serif;
+
+  /* Bumped up a step from the original plan for comfortable laptop viewing —
+     every screen reads these tokens rather than sizing text itself, so this
+     single change is what scales the whole app. */
+  --text-title: 26px;
+  --text-title--line-height: 1.2;
+  --text-section: 20px;
+  --text-section--line-height: 1.25;
+  --text-card-head: 16px;
+  --text-card-head--line-height: 1.3;
+  --text-body: 15px;
+  --text-body--line-height: 1.45;
+  --text-meta: 13px;
+  --text-meta--line-height: 1.3;
+  --text-numeric: 18px;
+  --text-numeric--line-height: 1.3;
+  /* Kitchen Display only — read from a few feet away, not desk distance like
+     the rest of the app's screens. */
+  --text-display: 32px;
+  --text-display--line-height: 1.15;
+
+  /* Mobile shell motion (used behind `motion-safe:`, so reduced-motion users
+     get none). push-in animates `left`, not `transform`: a transformed
+     ancestor becomes the containing block for position:fixed descendants, and
+     the New Order screen's bottom cart bar is fixed. */
+  --animate-push-in: push-in 220ms ease-out;
+  --animate-slide-up: slide-up 240ms ease-out;
+  @keyframes push-in {
+    from {
+      left: 100%;
+    }
+    to {
+      left: 0;
+    }
+  }
+  @keyframes slide-up {
+    from {
+      transform: translateY(100%);
+    }
+    to {
+      transform: translateY(0);
+    }
+  }
+
+  /* One radius, everywhere. For numeric/data columns, use Tailwind's built-in
+     `tabular-nums lining-nums` utilities rather than a monospace font. */
+  --radius-card: 4px;
+}
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--color-surface);
+    color: var(--color-ink);
+    font-family: var(--font-body);
+    /* Matches --text-body — the default for any element with no explicit
+       text-* class, kept in step with the token above. */
+    font-size: 15px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}

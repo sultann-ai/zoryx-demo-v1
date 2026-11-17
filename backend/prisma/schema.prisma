@@ -1,0 +1,845 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ================= ENUMS =================
+
+enum StaffRole {
+  SUPER_ADMIN
+  POS_ADMIN
+  ONLINE_ADMIN
+  KITCHEN
+  // Waiters taking dine-in orders on a tablet/phone. Everything they can reach is
+  // default-deny (see backend/src/common/middlewares/auth.ts's requireRole) — they only
+  // have what's explicitly listed in their routes/socket rooms, nothing by accident.
+  ORDER_TAKER
+}
+
+enum DiningAreaType {
+  TABLE
+  FAMILY_HALL
+  GENTS_HALL
+}
+
+enum OrderSource {
+  POS
+  ONLINE
+  PHONE
+  ORDER_TAKER
+}
+
+enum OrderType {
+  DINE_IN
+  TAKEAWAY
+  DELIVERY
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  IN_KITCHEN
+  READY
+  COMPLETED
+  CANCELLED
+  // A submitted-but-not-yet-reviewed order (ORDER_TAKER or online). Nothing downstream —
+  // kitchen queue, inventory deduction, business-day end, sales totals — treats this as a
+  // real order until reception accepts it (see order.service.ts's acceptOrder).
+  AWAITING_RECEPTION
+  // A POS order placed "for later": saved, numbered and fully priced, but on hold — not in
+  // Incoming orders, not in any kitchen queue, no stock deducted, nothing emitted or printed
+  // — until Order.scheduledFor. Then releaseScheduledOrder moves it to AWAITING_RECEPTION
+  // exactly once, and from there it's an ordinary incoming order.
+  SCHEDULED
+}
+
+enum OrderItemStatus {
+  PENDING
+  PREPARING
+  READY
+  SERVED
+}
+
+enum OrderChangeKind {
+  EDIT
+  CANCEL
+}
+
+enum OrderChangeStatus {
+  APPLIED
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum PaymentMethod {
+  CASH
+  ONLINE
+}
+
+enum PaymentStatus {
+  PENDING
+  AWAITING_VERIFICATION
+  VERIFIED
+  REJECTED
+}
+
+enum InventoryTrackingType {
+  AUTO
+  MANUAL
+}
+
+enum InventoryTxnType {
+  STOCK_IN
+  STOCK_OUT
+  ADJUSTMENT
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  LEAVE
+  HALF_DAY
+}
+
+enum VendorLedgerEntryType {
+  PURCHASE
+  PAYMENT
+}
+
+enum MediaKind {
+  MENU_ITEM
+  DEAL
+  GALLERY
+  PAYMENT_QR
+  CATEGORY
+  // Reserved for the ordering module (customer payment screenshots). Staff cannot upload it
+  // and the public media route never serves it.
+  PAYMENT_PROOF
+}
+
+// ================= STAFF / AUTH (POS side) =================
+
+model StaffUser {
+  id           String    @id @default(uuid())
+  name         String
+  username     String    @unique
+  passwordHash String
+  role         StaffRole
+  kitchenId    String?
+  kitchen      Kitchen?  @relation(fields: [kitchenId], references: [id])
+  employeeId   String?   @unique
+  employee     Employee? @relation(fields: [employeeId], references: [id])
+  isActive     Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  ordersPlaced          Order[]                @relation("PlacedByStaff")
+  ordersAccepted        Order[]                @relation("AcceptedBy")
+  paymentsVerified      Order[]                @relation("PaymentVerifiedBy")
+  businessDaysOpened    BusinessDay[]          @relation("OpenedBy")
+  businessDaysClosed    BusinessDay[]          @relation("ClosedBy")
+  inventoryTxns         InventoryTransaction[]
+  vendorLedgerEntries   VendorLedgerEntry[]
+  orderChangesRequested OrderChange[]          @relation("OrderChangesRequested")
+  orderChangesReviewed  OrderChange[]          @relation("OrderChangesReviewed")
+  mediaUploaded         MediaAsset[]
+
+  @@index([role])
+}
+
+model Kitchen {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  staff      StaffUser[]
+  menuItems  MenuItem[]
+  orderItems OrderItem[]
+}
+
+// ================= MENU =================
+
+model Category {
+  id        String      @id @default(uuid())
+  name      String      @unique
+  // Urdu display name and display order for the customer website.
+  nameUr    String?
+  sortOrder Int         @default(0)
+  // Optional photo for the customer website; when missing the website uses the first item's photo.
+  imageId   String?
+  image     MediaAsset? @relation("CategoryImage", fields: [imageId], references: [id], onDelete: SetNull)
+
+  menuItems       MenuItem[]
+  dealChoiceSlots DealComponent[]
+  addOns          AddOn[]
+}
+
+model MenuItem {
+  id                String      @id @default(uuid())
+  name              String
+  description       String?
+  // Nullable: a deal-only item (e.g. "Full Broast") or a sized item (e.g. pizza) has
+  // no single standalone price — real prices for those live on MenuItemVariant instead.
+  price             Decimal?    @db.Decimal(10, 2)
+  slug              String      @unique
+  // False for items that only ever appear inside a deal, never sold on their own.
+  sellableAlone     Boolean     @default(true)
+  // True for an item with no menu-set price at all (e.g. a custom cake) — the cashier
+  // types the price at order time instead. Mutually exclusive with `price` and with
+  // having any MenuItemVariant; enforced at menu create/update, not by the schema.
+  isOpenPrice       Boolean     @default(false)
+  // Optional guard rails on the price the cashier can type for an open-price item.
+  // Both null means no limit. Meaningless (and rejected) on a non-open-price item.
+  minPrice          Decimal?    @db.Decimal(10, 2)
+  maxPrice          Decimal?    @db.Decimal(10, 2)
+  kitchenId         String
+  kitchen           Kitchen     @relation(fields: [kitchenId], references: [id])
+  categoryId        String?
+  category          Category?   @relation(fields: [categoryId], references: [id])
+  // Legacy free-text image URL; nothing uploads into it. imageId (below) supersedes it for the
+  // customer website.
+  imageUrl          String?
+  imageId           String?
+  image             MediaAsset? @relation("MenuItemImage", fields: [imageId], references: [id], onDelete: SetNull)
+  nameUr            String?
+  descriptionUr     String?
+  isFeatured        Boolean     @default(false)
+  sortOrder         Int         @default(0)
+  isAvailableInPOS  Boolean     @default(true)
+  isAvailableOnline Boolean     @default(true)
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+
+  variants       MenuItemVariant[]
+  orderItems     OrderItem[]
+  inventoryLinks MenuItemInventoryLink[]
+  dealItems      DealItem[]
+  dealComponents DealComponent[]
+
+  @@index([kitchenId])
+}
+
+// A sized/flavor variant of a MenuItem (e.g. "Small"/"Medium"/"Large" for a pizza,
+// "Half"/"Full" for pasta). price is nullable for deal-only variants (e.g. the "5 pc"
+// Nuggets size, which only exists as a deal component, never sold at that size alone).
+model MenuItemVariant {
+  id         String   @id @default(uuid())
+  menuItemId String
+  menuItem   MenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  label      String
+  price      Decimal? @db.Decimal(10, 2)
+  sortOrder  Int      @default(0)
+
+  dealComponents DealComponent[]
+  orderItems     OrderItem[]
+
+  @@unique([menuItemId, label])
+}
+
+// Add-ons (e.g. Extra Chicken, Extra Cheese) priced per size within one category.
+// categoryId scopes which items can take this add-on — without it, matching by size
+// label alone would offer a pizza add-on priced for "Large" on anything else that
+// happens to have a "Large" size too (e.g. Fries, category Sides).
+model AddOn {
+  id         String       @id @default(uuid())
+  name       String       @unique
+  categoryId String?
+  category   Category?    @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  prices     AddOnPrice[]
+}
+
+model AddOnPrice {
+  id      String  @id @default(uuid())
+  addOnId String
+  addOn   AddOn   @relation(fields: [addOnId], references: [id], onDelete: Cascade)
+  // Matches a MenuItemVariant.label on the item the add-on applies to, e.g. "Small".
+  size    String
+  price   Decimal @db.Decimal(10, 2)
+
+  @@unique([addOnId, size])
+}
+
+// ================= DEALS (bundled combos, composed at creation time) =================
+
+model Deal {
+  id                String      @id @default(uuid())
+  name              String
+  description       String?
+  price             Decimal     @db.Decimal(10, 2)
+  // Stable business key for idempotent seeding, e.g. "DEAL-01", "MEGA".
+  code              String      @unique
+  imageId           String?
+  image             MediaAsset? @relation("DealImage", fields: [imageId], references: [id], onDelete: SetNull)
+  nameUr            String?
+  descriptionUr     String?
+  // "Popular" star on the customer website.
+  isFeatured        Boolean     @default(false)
+  isActive          Boolean     @default(true)
+  isAvailableInPOS  Boolean     @default(true)
+  isAvailableOnline Boolean     @default(true)
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+
+  items      DealItem[]
+  components DealComponent[]
+  orderLines OrderDealLine[]
+}
+
+model DealItem {
+  id         String   @id @default(uuid())
+  dealId     String
+  deal       Deal     @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  menuItemId String
+  menuItem   MenuItem @relation(fields: [menuItemId], references: [id])
+  quantity   Int
+
+  @@unique([dealId, menuItemId])
+}
+
+// A line in a deal's composition. Exactly one of (menuItemId), (variantId), or
+// (choiceCategoryId + choiceSize) is set, enforced in application code (not expressible
+// as a DB constraint in Prisma):
+//   menuItemId  = a fixed component that has no size at all ("2x Zinger Burger", "1x Limca")
+//   variantId   = a fixed component at one specific size ("1x Chicken Boti Shawarma, size S")
+//   choiceCategoryId + choiceSize = a choice slot ("1x any pizza variant sized Small"),
+//     optionally narrowed to specific items via allowedItemIds (empty = any item allowed)
+model DealComponent {
+  id               String           @id @default(uuid())
+  dealId           String
+  deal             Deal             @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  quantity         Int
+  menuItemId       String?
+  menuItem         MenuItem?        @relation(fields: [menuItemId], references: [id])
+  variantId        String?
+  // Explicit Restrict: Prisma's default for an optional relation is SetNull, which would
+  // let deleting a variant silently corrupt a deal's fixed-size component (its variantId
+  // just goes null, no error) instead of blocking the delete the way the menu-variant
+  // delete endpoint's 409 guard expects.
+  variant          MenuItemVariant? @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  choiceCategoryId String?
+  choiceCategory   Category?        @relation(fields: [choiceCategoryId], references: [id])
+  choiceSize       String?
+  allowedItemIds   String[]         @default([])
+
+  @@index([dealId])
+}
+
+// ================= DINING AREA =================
+
+model DiningArea {
+  id       String         @id @default(uuid())
+  name     String
+  type     DiningAreaType
+  // Free-text room/section the table is in ("Family Hall", "Gents Hall", "Rooftop") — what
+  // the New Order table pickers filter by. Trimmed, at most DINING_AREA_SECTION_MAX_LENGTH
+  // (50) characters; null means none ("Other" in the pickers). Backfilled from `type` when
+  // added, since `type` was being used as the hall before this existed.
+  area     String?
+  capacity Int?
+  isActive Boolean        @default(true)
+
+  orders Order[]
+}
+
+// ================= EMPLOYEES (waiters, riders, cooks, everyone on payroll) =================
+
+model Employee {
+  id          String   @id @default(uuid())
+  name        String
+  phone       String?
+  designation String
+  baseSalary  Decimal  @db.Decimal(10, 2)
+  joiningDate DateTime
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  staffAccount   StaffUser?
+  ordersAsWaiter Order[]            @relation("WaiterOrders")
+  ordersAsRider  Order[]            @relation("RiderOrders")
+  attendance     AttendanceRecord[]
+  payroll        PayrollEntry[]
+}
+
+model AttendanceRecord {
+  id         String           @id @default(uuid())
+  employeeId String
+  employee   Employee         @relation(fields: [employeeId], references: [id])
+  date       DateTime         @db.Date
+  status     AttendanceStatus
+  checkIn    DateTime?
+  checkOut   DateTime?
+  remarks    String?
+
+  @@unique([employeeId, date])
+}
+
+model PayrollEntry {
+  id              String    @id @default(uuid())
+  employeeId      String
+  employee        Employee  @relation(fields: [employeeId], references: [id])
+  month           Int
+  year            Int
+  baseSalary      Decimal   @db.Decimal(10, 2)
+  allowance       Decimal   @default(0) @db.Decimal(10, 2)
+  deduction       Decimal   @default(0) @db.Decimal(10, 2)
+  advanceTaken    Decimal   @default(0) @db.Decimal(10, 2)
+  paidAmount      Decimal   @default(0) @db.Decimal(10, 2)
+  remainingAmount Decimal   @db.Decimal(10, 2)
+  paidAt          DateTime?
+  note            String?
+
+  @@unique([employeeId, month, year])
+}
+
+// ================= CUSTOMERS (online side) =================
+
+model Customer {
+  id           String   @id @default(uuid())
+  name         String
+  phone        String   @unique
+  email        String?  @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+
+  addresses CustomerAddress[]
+  orders    Order[]
+}
+
+model CustomerAddress {
+  id          String   @id @default(uuid())
+  customerId  String
+  customer    Customer @relation(fields: [customerId], references: [id])
+  label       String?
+  addressText String
+  isDefault   Boolean  @default(false)
+
+  orders Order[]
+}
+
+// ================= BUSINESS DAY (handles the past-midnight problem) =================
+
+model BusinessDay {
+  id         String     @id @default(uuid())
+  label      String
+  startedAt  DateTime
+  endedAt    DateTime?
+  isActive   Boolean    @default(true)
+  openedById String
+  openedBy   StaffUser  @relation("OpenedBy", fields: [openedById], references: [id])
+  closedById String?
+  closedBy   StaffUser? @relation("ClosedBy", fields: [closedById], references: [id])
+
+  orders Order[]
+
+  @@index([isActive])
+}
+
+// ================= ORDERS =================
+
+model Order {
+  id                   String           @id @default(uuid())
+  orderNumber          Int
+  businessDayId        String
+  businessDay          BusinessDay      @relation(fields: [businessDayId], references: [id])
+  source               OrderSource
+  type                 OrderType
+  diningAreaId         String?
+  diningArea           DiningArea?      @relation(fields: [diningAreaId], references: [id])
+  waiterId             String?
+  waiter               Employee?        @relation("WaiterOrders", fields: [waiterId], references: [id])
+  riderId              String?
+  rider                Employee?        @relation("RiderOrders", fields: [riderId], references: [id])
+  customerId           String?
+  customer             Customer?        @relation(fields: [customerId], references: [id])
+  customerAddressId    String?
+  customerAddress      CustomerAddress? @relation(fields: [customerAddressId], references: [id])
+  deliveryAddress      String?
+  // Guest checkout (no Customer row): who ordered and where it's going. Staff screens read these
+  // when customerId is null. customerPhone is stored normalised as 03XXXXXXXXX.
+  customerName         String?
+  customerPhone        String?
+  deliveryAreaId       String?
+  // Restrict: an area used by an order can only be deactivated, never deleted.
+  deliveryArea         DeliveryArea?    @relation(fields: [deliveryAreaId], references: [id], onDelete: Restrict)
+  // Charged on top of the items; included in totalAmount (and kept by every recompute).
+  deliveryFee          Decimal          @default(0) @db.Decimal(10, 2)
+  // The customer's private status link (random, URL-safe, >= 22 chars) and the short code they
+  // read out over the phone (5 chars, no look-alikes). Both null for every non-guest order.
+  publicId             String?          @unique
+  publicCode           String?          @unique
+  status               OrderStatus      @default(PENDING)
+  paymentMethod        PaymentMethod
+  paymentStatus        PaymentStatus    @default(PENDING)
+  // Legacy: a path under /uploads on the old local-disk storage. New proofs use paymentProofMediaId.
+  paymentScreenshotUrl String?
+  // The customer's payment screenshot, stored as a PAYMENT_PROOF media asset (in Postgres).
+  paymentProofMediaId  String?
+  paymentProofMedia    MediaAsset?      @relation("OrderPaymentProof", fields: [paymentProofMediaId], references: [id], onDelete: SetNull)
+  paymentVerifiedById  String?
+  paymentVerifiedBy    StaffUser?       @relation("PaymentVerifiedBy", fields: [paymentVerifiedById], references: [id])
+  placedByStaffId      String?
+  placedByStaff        StaffUser?       @relation("PlacedByStaff", fields: [placedByStaffId], references: [id])
+  // Set only when reception accepts an AWAITING_RECEPTION order (see order.service.ts's
+  // acceptOrder). Null for every order created directly at a non-awaiting status.
+  acceptedById         String?
+  acceptedBy           StaffUser?       @relation("AcceptedBy", fields: [acceptedById], references: [id])
+  acceptedAt           DateTime?
+  // Client-generated idempotency key for a duplicate-safe submit (see order.service.ts's
+  // submitOrderTakerOrder) — unique so a race lands on the DB constraint, not just the
+  // application-level pre-check. Null for every order that doesn't go through /orders/submit.
+  clientRequestId      String?          @unique
+  // When a SCHEDULED order is due to be released (UTC, like every DateTime here — shown in
+  // Pakistan time). Set only on orders placed with "Schedule for later"; kept after release
+  // as a record of what was asked for.
+  scheduledFor         DateTime?
+  // When a scheduled order actually left SCHEDULED (automatically or "Release now"). Null
+  // while still on hold, and for every order that was never scheduled.
+  releasedAt           DateTime?
+  totalAmount          Decimal          @db.Decimal(10, 2)
+  discount             Decimal          @default(0) @db.Decimal(10, 2)
+  // How much cash was actually handed over, recorded when a CASH order's payment is
+  // confirmed (see order.service.ts's updatePaymentStatus). Null until then — change due is
+  // paidAmount - totalAmount, computed on demand, never stored.
+  paidAmount           Decimal?         @db.Decimal(10, 2)
+  notes                String?
+  cancelledReason      String?
+  // Set when staff mark an accepted pickup order "Not collected" (the order is cancelled; this counts as a strike for the phone).
+  notCollectedAt       DateTime?
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+
+  items     OrderItem[]
+  dealLines OrderDealLine[]
+  changes   OrderChange[]
+  clientIp  OrderClientIp?
+
+  @@unique([businessDayId, orderNumber])
+  @@index([status])
+  @@index([source])
+  // The release job's query: SCHEDULED orders whose scheduledFor has passed.
+  @@index([status, scheduledFor])
+  // Per-phone limits for guest orders.
+  @@index([customerPhone, createdAt])
+  // Repeat no-shows: pickup orders staff marked "Not collected", counted per phone.
+  @@index([customerPhone, notCollectedAt])
+}
+
+model OrderChange {
+  id              String            @id @default(uuid())
+  orderId         String
+  order           Order             @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  requestedById   String
+  requestedBy     StaffUser         @relation("OrderChangesRequested", fields: [requestedById], references: [id])
+  reviewedById    String?
+  reviewedBy      StaffUser?        @relation("OrderChangesReviewed", fields: [reviewedById], references: [id])
+  kind            OrderChangeKind
+  status          OrderChangeStatus
+  reason          String?
+  rejectionReason String?
+  previousState   Json
+  requestedState  Json?
+  createdAt       DateTime          @default(now())
+  reviewedAt      DateTime?
+
+  @@index([orderId, createdAt])
+  @@index([status, createdAt])
+}
+
+model OrderItem {
+  id              String           @id @default(uuid())
+  orderId         String
+  order           Order            @relation(fields: [orderId], references: [id])
+  menuItemId      String
+  menuItem        MenuItem         @relation(fields: [menuItemId], references: [id])
+  kitchenId       String
+  kitchen         Kitchen          @relation(fields: [kitchenId], references: [id])
+  quantity        Int
+  unitPrice       Decimal          @db.Decimal(10, 2)
+  subtotal        Decimal          @db.Decimal(10, 2)
+  status          OrderItemStatus  @default(PENDING)
+  // Free-text kitchen instruction for this line ("no onion", "extra spicy") — trimmed,
+  // at most ORDER_LINE_NOTE_MAX_LENGTH (100) characters, null for none. Validated in
+  // order.service.ts's parseLineNote. Never set on deal-exploded rows: a deal's note lives
+  // on its OrderDealLine.notes instead, and screens read it through dealOrderLine.
+  notes           String?
+  // True for a line whose unitPrice was typed by the cashier at order time (an
+  // open-price menu item) rather than resolved from the menu/variant. Lets screens
+  // label the line "Custom price" without having to re-check the menu item.
+  isCustomPrice   Boolean          @default(false)
+  // Set only on items exploded out of a deal's composition; null for everything ordered directly.
+  dealOrderLineId String?
+  dealOrderLine   OrderDealLine?   @relation(fields: [dealOrderLineId], references: [id])
+  // Which size this line was ordered at, if the item is sized (null for a plain item or a
+  // deal-exploded item). onDelete: SetNull — deleting/renaming a variant later must never
+  // alter history; variantLabel is the permanent snapshot (unitPrice already snapshots the
+  // price the same way), variantId is just a live link back while the variant still exists.
+  variantId       String?
+  variant         MenuItemVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  variantLabel    String?
+  // Snapshot of the chosen add-ons at order time: [{ addOnId, name, price }, ...], or
+  // null for none — same reasoning as variantLabel, a later rename/price change/delete
+  // of the AddOn must never alter an already-placed order's line. unitPrice/subtotal
+  // already include each add-on's price, summed in at order time.
+  addOns          Json?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  @@index([kitchenId, status])
+  @@index([dealOrderLineId])
+}
+
+// One row per deal line ordered; its dealId is nullable so a later Deal deletion
+// doesn't break existing order history, and dealName snapshots the name at order time.
+model OrderDealLine {
+  id            String   @id @default(uuid())
+  orderId       String
+  order         Order    @relation(fields: [orderId], references: [id])
+  dealId        String?
+  deal          Deal?    @relation(fields: [dealId], references: [id])
+  dealName      String
+  quantity      Int
+  unitPrice     Decimal  @db.Decimal(10, 2)
+  subtotal      Decimal  @db.Decimal(10, 2)
+  // The deal's standard list price at order time — set on every line, customized or not, so
+  // the owner can always see what the standard price was vs. what was actually charged.
+  baseUnitPrice Decimal? @db.Decimal(10, 2)
+  // Null = not customized, this line is the deal's standard composition at unitPrice =
+  // deal.price. Otherwise a readable snapshot of what the cashier actually built:
+  // { reason?: string, items: [{ menuItemId, name, variantLabel?, quantity, addOns: [{name,
+  // price}] }] }. The OrderItem rows exploded from this line are the real, machine-usable
+  // version (same shape as any other order item); this field exists purely for a human
+  // reading order history to see what changed, without joining back through OrderItem.
+  customization Json?
+  // Same rules as OrderItem.notes, but for the deal as a whole — shown under every item
+  // exploded from this line (kitchen display, kitchen slips) since they're all one dish
+  // order from the customer's point of view. Null for none.
+  notes         String?
+  createdAt     DateTime @default(now())
+
+  items OrderItem[]
+
+  @@index([orderId])
+  @@index([dealId])
+}
+
+// ================= VENDOR LEDGER =================
+
+model Vendor {
+  id            String   @id @default(uuid())
+  name          String
+  contactPerson String?
+  phone         String?
+  address       String?
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+
+  ledgerEntries         VendorLedgerEntry[]
+  inventoryTransactions InventoryTransaction[]
+}
+
+model VendorLedgerEntry {
+  id           String                @id @default(uuid())
+  vendorId     String
+  vendor       Vendor                @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  type         VendorLedgerEntryType
+  amount       Decimal               @db.Decimal(10, 2)
+  description  String?
+  date         DateTime
+  recordedById String
+  recordedBy   StaffUser             @relation(fields: [recordedById], references: [id])
+  createdAt    DateTime              @default(now())
+
+  @@index([vendorId])
+}
+
+// ================= INVENTORY =================
+
+model InventoryItem {
+  id           String                @id @default(uuid())
+  name         String
+  unit         String
+  currentStock Decimal               @db.Decimal(10, 2)
+  minThreshold Decimal?              @db.Decimal(10, 2)
+  trackingType InventoryTrackingType
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+
+  menuItemLinks MenuItemInventoryLink[]
+  transactions  InventoryTransaction[]
+}
+
+model MenuItemInventoryLink {
+  id               String        @id @default(uuid())
+  menuItemId       String
+  menuItem         MenuItem      @relation(fields: [menuItemId], references: [id])
+  inventoryItemId  String
+  inventoryItem    InventoryItem @relation(fields: [inventoryItemId], references: [id])
+  quantityPerOrder Decimal       @db.Decimal(10, 2)
+
+  @@unique([menuItemId, inventoryItemId])
+}
+
+model InventoryTransaction {
+  id              String           @id @default(uuid())
+  inventoryItemId String
+  inventoryItem   InventoryItem    @relation(fields: [inventoryItemId], references: [id])
+  type            InventoryTxnType
+  quantity        Decimal          @db.Decimal(10, 2)
+  relatedOrderId  String?
+  performedById   String
+  performedBy     StaffUser        @relation(fields: [performedById], references: [id])
+  note            String?
+  createdAt       DateTime         @default(now())
+  // Unused for now — a hook so a stock-in can later be linked to the vendor purchase
+  // that supplied it, without a schema change when that logic is added.
+  vendorId        String?
+  vendor          Vendor?          @relation(fields: [vendorId], references: [id])
+}
+
+// ================= MEDIA (images stored in Postgres, not on disk) =================
+
+// Metadata only. The bytes live in MediaBlob so that listing/joining assets never drags image
+// data along — only the public serving route reads MediaBlob.
+model MediaAsset {
+  id              String     @id @default(uuid())
+  kind            MediaKind
+  mimeType        String
+  width           Int
+  height          Int
+  sizeBytes       Int
+  // True for a cut-out photo that kept its transparent pixels (stored as WebP with alpha).
+  hasTransparency Boolean    @default(false)
+  createdAt       DateTime   @default(now())
+  createdById     String?
+  createdBy       StaffUser? @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  blob               MediaBlob?
+  menuItems          MenuItem[]       @relation("MenuItemImage")
+  deals              Deal[]           @relation("DealImage")
+  categories         Category[]       @relation("CategoryImage")
+  galleryImages      GalleryImage[]
+  paymentAccounts    PaymentAccount[]
+  paymentProofOrders Order[]          @relation("OrderPaymentProof")
+
+  @@index([kind, createdAt])
+}
+
+model MediaBlob {
+  // Same id as its MediaAsset (1:1).
+  id    String     @id
+  asset MediaAsset @relation(fields: [id], references: [id], onDelete: Cascade)
+  data  Bytes
+  thumb Bytes?
+}
+
+// ================= WEBSITE CONTENT =================
+
+// Single row, id always 1 (also enforced by a CHECK constraint in the migration).
+model SiteSettings {
+  id                    Int      @id @default(1)
+  shopNameEn            String
+  shopNameUr            String
+  taglineEn             String
+  taglineUr             String
+  phone                 String
+  // Digits only, international format without "+", e.g. 923001234567.
+  whatsappNumber        String
+  addressEn             String
+  addressUr             String
+  mapUrl                String
+  openingHoursEn        String
+  openingHoursUr        String
+  announcementEn        String?
+  announcementUr        String?
+  onlineOrderingEnabled Boolean  @default(true)
+  // Which ways to order are offered online (at least one stays on). Pickup is a TAKEAWAY order.
+  deliveryEnabled       Boolean  @default(true)
+  pickupEnabled         Boolean  @default(true)
+  pickupMinOrderAmount  Decimal  @default(0) @db.Decimal(10, 2)
+  pickupNoteEn          String?
+  pickupNoteUr          String?
+  facebookUrl           String?
+  instagramUrl          String?
+  tiktokUrl             String?
+  updatedAt             DateTime @updatedAt
+}
+
+model DeliveryArea {
+  id             String   @id @default(uuid())
+  nameEn         String
+  nameUr         String
+  deliveryFee    Decimal  @default(0) @db.Decimal(10, 2)
+  minOrderAmount Decimal  @default(0) @db.Decimal(10, 2)
+  sortOrder      Int      @default(0)
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  orders Order[]
+}
+
+model PaymentAccount {
+  id            String      @id @default(uuid())
+  // e.g. Easypaisa, JazzCash, Bank
+  label         String
+  accountTitle  String
+  accountNumber String
+  qrMediaId     String?
+  qrMedia       MediaAsset? @relation(fields: [qrMediaId], references: [id], onDelete: SetNull)
+  sortOrder     Int         @default(0)
+  isActive      Boolean     @default(true)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+}
+
+model GalleryImage {
+  id        String     @id @default(uuid())
+  mediaId   String
+  media     MediaAsset @relation(fields: [mediaId], references: [id], onDelete: Restrict)
+  captionEn String?
+  captionUr String?
+  sortOrder Int        @default(0)
+  isActive  Boolean    @default(true)
+  createdAt DateTime   @default(now())
+}
+
+model Testimonial {
+  id        String   @id @default(uuid())
+  name      String
+  area      String?
+  text      String
+  textUr    String?
+  // 1-5, enforced by a CHECK constraint in the migration.
+  rating    Int?
+  sortOrder Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+}
+
+// ================= GUEST ORDER LIMITS =================
+
+// One row per guest order: a keyed hash of the client IP (never the IP itself), so the per-IP
+// limits survive restarts and deploys. A separate table, not an Order column, so the hash is never
+// part of the order JSON staff receive.
+model OrderClientIp {
+  orderId   String   @id
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  ipHash    String
+  createdAt DateTime @default(now())
+
+  @@index([ipHash, createdAt])
+}

@@ -1,0 +1,29 @@
+# Repo-wide ignores. Each app keeps its own .gitignore for app-specific paths.
+
+# Dependencies and build output
+node_modules/
+dist/
+out/
+
+# Environment files (each app commits only .env.example)
+.env
+.env.*
+!.env.example
+!.env.production
+
+# Keys and certificates — never commit these
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+railway ssh*
+
+# OS / tool noise
+*.stackdump
+*.log
+.DS_Store
+Thumbs.db
+
+# Claude Code local state
+.claude/worktrees/
+.claude/settings.local.json

@@ -1,0 +1,7 @@
+{
+  "_note": "Shop contact details. Used when the store settings from the API (POS site settings) have no value of their own: the call links, footer and <noscript> text in index.html (phone), every WhatsApp button (whatsapp, international digits) and the Open-in-Maps buttons (mapUrl). appQr: file name of a QR code image placed in public/ (for example \"/app-qr.png\", linking to the app or PWA install page); empty shows a placeholder in the footer.",
+  "phone": "0300 5760395",
+  "whatsapp": "923005760395",
+  "mapUrl": "https://share.google/lxWfNf1IVtuv6RHDU",
+  "appQr": ""
+}

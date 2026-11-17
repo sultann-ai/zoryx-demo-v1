@@ -1,0 +1,688 @@
+{
+  "info": {
+    "_postman_id": "b6f2a5b0-8f2a-4a1a-9b1a-zoryx-demo-api",
+    "name": "Zoryx API",
+    "description": "Full API for the Zoryx backend (POS + Online Ordering). Log in once using the 'Staff Login' request (sets {{token}} automatically) and/or the 'Customer Login' request (sets {{customerToken}} automatically), then run any other request in the collection. Replace :id / :itemId / :orderId path variables with real IDs from your own data (create a Kitchen, Category, MenuItem etc. first, or use IDs returned by earlier requests).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:5000", "type": "string" },
+    { "key": "token", "value": "", "type": "string" },
+    { "key": "customerToken", "value": "", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Root health check",
+          "request": { "auth": { "type": "noauth" }, "method": "GET", "url": "{{baseUrl}}/health" }
+        },
+        {
+          "name": "POS health check",
+          "request": { "auth": { "type": "noauth" }, "method": "GET", "url": "{{baseUrl}}/api/pos/health" }
+        },
+        {
+          "name": "Online health check",
+          "request": { "auth": { "type": "noauth" }, "method": "GET", "url": "{{baseUrl}}/api/online/health" }
+        }
+      ]
+    },
+    {
+      "name": "Auth (Staff)",
+      "item": [
+        {
+          "name": "Staff Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    const data = pm.response.json();",
+                  "    pm.collectionVariables.set('token', data.token);",
+                  "    console.log('Saved staff token to {{token}}');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/pos/auth/login",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"test.superadmin\",\n  \"password\": \"test-password-123\"\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Business Day",
+      "item": [
+        { "name": "Get current business day", "request": { "method": "GET", "url": "{{baseUrl}}/api/pos/business-day/current" } },
+        {
+          "name": "Start business day",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/pos/business-day/start",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"label\": \"2026-09-20\"\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "End business day",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/pos/business-day/end",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"force\": false\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Kitchens",
+      "item": [
+        { "name": "List kitchens", "request": { "method": "GET", "url": "{{baseUrl}}/api/pos/kitchens" } },
+        { "name": "Get kitchen by id", "request": { "method": "GET", "url": "{{baseUrl}}/api/pos/kitchens/:id" } },
+        {
+          "name": "Create kitchen",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/pos/kitchens",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Main Kitchen\",\n  \"isActive\": true\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Update kitchen",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/pos/kitchens/:id",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Main Kitchen (Updated)\",\n  \"isActive\": true\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        { "name": "Delete kitchen", "request": { "method": "DELETE", "url": "{{baseUrl}}/api/pos/kitchens/:id" } }
+      ]
+    },
+    {
+      "name": "Staff",
+      "item": [
+        { "name": "List staff", "request": { "method": "GET", "url": "{{baseUrl}}/api/pos/staff" } },
+        { "name": "Get staff by id", "request": { "method": "GET", "url": "{{baseUrl}}/api/pos/staff/:id" } },
+        {
+          "name": "Create staff",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/pos/staff",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Kitchen Staff 1\",\n  \"username\": \"kitchen.staff1\",\n  \"password\": \"changeme123\",\n  \"role\": \"KITCHEN\",\n  \"kitchenId\": \"REPLACE_WITH_KITCHEN_ID\"\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Update staff (assign role/kitchen)",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/pos/staff/:id",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"role\": \"POS_ADMIN\",\n  \"kitchenId\": null,\n  \"isActive\": true\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        { "name": "Deactivate staff", "request": { "method": "DELETE", "url": "{{baseUrl}}/api/pos/staff/:id" } }
+      ]
+    },
+    {
+      "name": "Categories",
+      "item": [
+        { "name": "List categories", "request": { "method": "GET", "url": "{{baseUrl}}/api/pos/categories" } },
+        { "name": "Get category by id", "request": { "method": "GET", "url": "{{baseUrl}}/api/pos/categories/:id" } },
+        {
+          "name": "Create category",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/pos/categories",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Beverages\"\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Update category",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/pos/categories/:id",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Beverages & Drinks\"\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        { "name": "Delete category", "request": { "method": "DELETE", "url": "{{baseUrl}}/api/pos/categories/:id" } }
+      ]
+    },
+    {
+      "name": "Menu (POS)",
+      "item": [
+        { "name": "List menu items", "request": { "method": "GET", "url": "{{baseUrl}}/api/pos/menu?kitchenId=" } },
+        { "name": "Get menu item by id", "request": { "method": "GET", "url": "{{baseUrl}}/api/pos/menu/:id" } },
+        {
+          "name": "Create menu item",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/pos/menu",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Zinger Burger\",\n  \"description\": \"Crispy chicken burger\",\n  \"price\": 550,\n  \"kitchenId\": \"REPLACE_WITH_KITCHEN_ID\",\n  \"categoryId\": \"REPLACE_WITH_CATEGORY_ID\",\n  \"isAvailableInPOS\": true,\n  \"isAvailableOnline\": true\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Update menu item",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/pos/menu/:id",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"price\": 600\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Patch online availability",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/pos/menu/:id/online-availability",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"isAvailableOnline\": false\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        { "name": "Delete menu item", "request": { "method": "DELETE", "url": "{{baseUrl}}/api/pos/menu/:id" } }
+      ]
+    },
+    {
+      "name": "Dining Areas",
+      "item": [
+        { "name": "List dining areas", "request": { "method": "GET", "url": "{{baseUrl}}/api/pos/dining-areas" } },
+        { "name": "Get dining area by id", "request": { "method": "GET", "url": "{{baseUrl}}/api/pos/dining-areas/:id" } },
+        {
+          "name": "Create dining area",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/pos/dining-areas",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Table 1\",\n  \"type\": \"TABLE\",\n  \"capacity\": 4\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Update dining area",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/pos/dining-areas/:id",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"isActive\": false\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        { "name": "Delete dining area", "request": { "method": "DELETE", "url": "{{baseUrl}}/api/pos/dining-areas/:id" } }
+      ]
+    },
+    {
+      "name": "Employees",
+      "item": [
+        { "name": "List employees", "request": { "method": "GET", "url": "{{baseUrl}}/api/pos/employees" } },
+        {
+          "name": "Create employee",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/pos/employees",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Ali Khan\",\n  \"designation\": \"Waiter\",\n  \"baseSalary\": 30000,\n  \"joiningDate\": \"2024-01-15\",\n  \"phone\": \"03001234567\"\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        { "name": "Get employee by id", "request": { "method": "GET", "url": "{{baseUrl}}/api/pos/employees/:id" } },
+        {
+          "name": "Update employee",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/pos/employees/:id",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"isActive\": false\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        { "name": "Delete employee", "request": { "method": "DELETE", "url": "{{baseUrl}}/api/pos/employees/:id" } },
+        {
+          "name": "Mark attendance",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/pos/employees/attendance",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"employeeId\": \"REPLACE_WITH_EMPLOYEE_ID\",\n  \"date\": \"2026-09-20\",\n  \"status\": \"PRESENT\"\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Get attendance range",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/pos/employees/attendance?startDate=2026-09-01&endDate=2026-09-30&employeeId="
+          }
+        },
+        {
+          "name": "Upsert payroll entry",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/pos/employees/payroll",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"employeeId\": \"REPLACE_WITH_EMPLOYEE_ID\",\n  \"month\": 9,\n  \"year\": 2026,\n  \"allowance\": 2000,\n  \"deduction\": 500,\n  \"advanceTaken\": 1000,\n  \"paidAmount\": 10000\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Get current-month payroll",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/pos/employees/payroll/current-month" }
+        }
+      ]
+    },
+    {
+      "name": "Orders (POS)",
+      "item": [
+        {
+          "name": "List orders",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/pos/orders?businessDayId=&status=&source=&diningAreaId=" }
+        },
+        {
+          "name": "List orders (export xlsx)",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/pos/orders?export=xlsx" }
+        },
+        {
+          "name": "Create order",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/pos/orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"DINE_IN\",\n  \"paymentMethod\": \"CASH\",\n  \"diningAreaId\": \"REPLACE_WITH_DINING_AREA_ID\",\n  \"items\": [\n    { \"menuItemId\": \"REPLACE_WITH_MENU_ITEM_ID\", \"quantity\": 2 }\n  ]\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        { "name": "Get order by id", "request": { "method": "GET", "url": "{{baseUrl}}/api/pos/orders/:id" } },
+        {
+          "name": "Cancel order",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/pos/orders/:id/cancel",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cancelledReason\": \"Customer changed their mind\"\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Update order item status",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/pos/orders/:id/items/:itemId/status",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"PREPARING\"\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Kitchen Queue",
+      "item": [
+        {
+          "name": "Get kitchen queue",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/pos/kitchen-queue?kitchenId=REPLACE_WITH_KITCHEN_ID" }
+        }
+      ]
+    },
+    {
+      "name": "Inventory",
+      "item": [
+        { "name": "List inventory items", "request": { "method": "GET", "url": "{{baseUrl}}/api/pos/inventory" } },
+        { "name": "List low-stock items", "request": { "method": "GET", "url": "{{baseUrl}}/api/pos/inventory?lowStock=true" } },
+        {
+          "name": "Create inventory item",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/pos/inventory",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Burger Buns\",\n  \"unit\": \"pcs\",\n  \"currentStock\": 100,\n  \"minThreshold\": 20,\n  \"trackingType\": \"AUTO\"\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        { "name": "Get inventory item by id", "request": { "method": "GET", "url": "{{baseUrl}}/api/pos/inventory/:id" } },
+        {
+          "name": "Update inventory item",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/pos/inventory/:id",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"minThreshold\": 15\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        { "name": "Delete inventory item", "request": { "method": "DELETE", "url": "{{baseUrl}}/api/pos/inventory/:id" } },
+        {
+          "name": "Adjust stock (manual)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/pos/inventory/:id/adjust",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"STOCK_IN\",\n  \"quantity\": 10,\n  \"note\": \"Restocked from supplier\"\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "List menu-item inventory links",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/pos/inventory/links?menuItemId=&inventoryItemId=" }
+        },
+        {
+          "name": "Create menu-item inventory link",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/pos/inventory/links",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"menuItemId\": \"REPLACE_WITH_MENU_ITEM_ID\",\n  \"inventoryItemId\": \"REPLACE_WITH_INVENTORY_ITEM_ID\",\n  \"quantityPerOrder\": 2\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        { "name": "Get inventory link by id", "request": { "method": "GET", "url": "{{baseUrl}}/api/pos/inventory/links/:id" } },
+        {
+          "name": "Update inventory link",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/pos/inventory/links/:id",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"quantityPerOrder\": 3\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        { "name": "Delete inventory link", "request": { "method": "DELETE", "url": "{{baseUrl}}/api/pos/inventory/links/:id" } }
+      ]
+    },
+    {
+      "name": "Reports",
+      "item": [
+        { "name": "Dashboard (today's active business day)", "request": { "method": "GET", "url": "{{baseUrl}}/api/pos/reports/dashboard" } },
+        {
+          "name": "Sales report (grouped by day)",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/pos/reports/sales?from=2026-08-01&to=2026-09-30&groupBy=day" }
+        },
+        {
+          "name": "Sales report (grouped by month)",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/pos/reports/sales?from=2026-01-01&to=2026-12-31&groupBy=month" }
+        },
+        {
+          "name": "Export daily report (xlsx)",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/pos/reports/export?type=daily&businessDayId=REPLACE_WITH_BUSINESS_DAY_ID" }
+        },
+        {
+          "name": "Export monthly report (xlsx)",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/pos/reports/export?type=monthly&businessDayId=REPLACE_WITH_BUSINESS_DAY_ID" }
+        }
+      ]
+    },
+    {
+      "name": "Auth (Customer)",
+      "item": [
+        {
+          "name": "Customer Signup",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "    const data = pm.response.json();",
+                  "    pm.collectionVariables.set('customerToken', data.token);",
+                  "    console.log('Saved customer token to {{customerToken}}');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/online/auth/signup",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Ayesha Khan\",\n  \"phone\": \"03001112222\",\n  \"password\": \"custpass123\",\n  \"email\": \"ayesha@example.com\"\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Customer Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    const data = pm.response.json();",
+                  "    pm.collectionVariables.set('customerToken', data.token);",
+                  "    console.log('Saved customer token to {{customerToken}}');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/online/auth/login",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone\": \"03001112222\",\n  \"password\": \"custpass123\"\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Customer Addresses",
+      "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{customerToken}}", "type": "string" }] },
+      "item": [
+        { "name": "List my addresses", "request": { "method": "GET", "url": "{{baseUrl}}/api/online/addresses" } },
+        {
+          "name": "Create address",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/online/addresses",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"label\": \"Home\",\n  \"addressText\": \"123 Main St\",\n  \"isDefault\": true\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        { "name": "Get address by id", "request": { "method": "GET", "url": "{{baseUrl}}/api/online/addresses/:id" } },
+        {
+          "name": "Update address",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/online/addresses/:id",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"addressText\": \"123 Main St, Apt 4\"\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        { "name": "Delete address", "request": { "method": "DELETE", "url": "{{baseUrl}}/api/online/addresses/:id" } }
+      ]
+    },
+    {
+      "name": "Online Menu (public)",
+      "item": [
+        {
+          "name": "List online menu",
+          "request": { "auth": { "type": "noauth" }, "method": "GET", "url": "{{baseUrl}}/api/online/menu" }
+        }
+      ]
+    },
+    {
+      "name": "Online Orders (Customer)",
+      "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{customerToken}}", "type": "string" }] },
+      "item": [
+        {
+          "name": "Create order - CASH (TAKEAWAY)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/online/orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"TAKEAWAY\",\n  \"paymentMethod\": \"CASH\",\n  \"items\": [\n    { \"menuItemId\": \"REPLACE_WITH_MENU_ITEM_ID\", \"quantity\": 1 }\n  ]\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Create order - CASH (DELIVERY)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/online/orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"DELIVERY\",\n  \"paymentMethod\": \"CASH\",\n  \"customerAddressId\": \"REPLACE_WITH_YOUR_ADDRESS_ID\",\n  \"items\": [\n    { \"menuItemId\": \"REPLACE_WITH_MENU_ITEM_ID\", \"quantity\": 1 }\n  ]\n}",
+              "options": { "raw": { "language": "json" } }
+            }
+          }
+        },
+        {
+          "name": "Create order - ONLINE payment (with screenshot upload)",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/online/orders",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "type", "value": "TAKEAWAY", "type": "text" },
+                { "key": "paymentMethod", "value": "ONLINE", "type": "text" },
+                {
+                  "key": "items",
+                  "value": "[{\"menuItemId\":\"REPLACE_WITH_MENU_ITEM_ID\",\"quantity\":1}]",
+                  "type": "text",
+                  "description": "Must be a JSON-encoded string when sent as multipart form data"
+                },
+                { "key": "screenshot", "type": "file", "src": "" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Payment (Admin)",
+      "item": [
+        { "name": "List pending payments", "request": { "method": "GET", "url": "{{baseUrl}}/api/online/payment/pending" } },
+        { "name": "Verify payment", "request": { "method": "PATCH", "url": "{{baseUrl}}/api/online/payment/:orderId/verify" } },
+        { "name": "Reject payment", "request": { "method": "PATCH", "url": "{{baseUrl}}/api/online/payment/:orderId/reject" } }
+      ]
+    }
+  ]
+}

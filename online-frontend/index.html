@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ur" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
+    <title>%BRAND_NAME_UR% — %BRAND_TAGLINE_UR% | %BRAND_NAME_EN%</title>
+    <meta
+      name="description"
+      content="%BRAND_NAME_UR%، %BRAND_OWNER_UR% — گھر بیٹھے آرڈر کریں۔ %BRAND_NAME_EN%, %BRAND_TAGLINE_EN% — order online for delivery."
+    />
+    <link rel="canonical" href="%SITE_URL%/" />
+    <meta name="theme-color" content="%THEME_COLOR%" />
+
+    <!-- Open the connection to the API early (data uses CORS fetch, photos use plain requests: one hint each). -->
+    <link rel="preconnect" href="%API_ORIGIN%" crossorigin />
+    <link rel="preconnect" href="%API_ORIGIN%" />
+    <link rel="icon" href="/favicon.ico" sizes="48x48" />
+    <link rel="icon" type="image/png" href="/favicon.png" sizes="32x32" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
+    <link rel="manifest" href="/site.webmanifest" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="%BRAND_NAME_EN% — %BRAND_NAME_UR%" />
+    <meta property="og:title" content="%BRAND_NAME_UR% — %BRAND_TAGLINE_UR%" />
+    <meta property="og:description" content="گھر بیٹھے آرڈر کریں — Order %BRAND_NAME_EN% online." />
+    <meta property="og:url" content="%SITE_URL%/" />
+    <meta property="og:image" content="%SITE_URL%/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:image" content="%SITE_URL%/og-image.png" />
+    <!-- Starts the hero poster / first API calls early. External + async because the CSP forbids inline scripts. -->
+    <meta name="api-origin" content="%API_ORIGIN%" />
+    <script src="/early-hints.js" async></script>
+  </head>
+  <body>
+    <noscript>
+      <p class="noscript-note">
+        آرڈر کے لیے کال کریں / Please call to order:
+        <a href="tel:%SHOP_PHONE_TEL%" dir="ltr">%SHOP_PHONE%</a>
+      </p>
+    </noscript>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
