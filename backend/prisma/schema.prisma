@@ -118,6 +118,9 @@ enum InventoryTxnType {
   STOCK_IN
   STOCK_OUT
   ADJUSTMENT
+  // Stock given back when an order that had deducted it is cancelled (order.service.ts's
+  // cancelOrder). Written once per order, never by the manual adjust endpoint.
+  RESTOCK_CANCEL
 }
 
 enum AttendanceStatus {
@@ -170,6 +173,7 @@ model StaffUser {
   orderChangesReviewed  OrderChange[]          @relation("OrderChangesReviewed")
   mediaUploaded         MediaAsset[]
   orderEvents           OrderEvent[]           @relation("OrderEventActor")
+  ordersCancelled       Order[]                @relation("CancelledBy")
 
   @@index([role])
 }
@@ -530,7 +534,12 @@ model Order {
   // paidAmount - totalAmount, computed on demand, never stored.
   paidAmount           Decimal?         @db.Decimal(10, 2)
   notes                String?
+  // Why it was cancelled (the "cancel reason"), plus who and when — set by every cancel path.
+  // cancelledAt/cancelledById are null for orders cancelled before they existed.
   cancelledReason      String?
+  cancelledAt          DateTime?
+  cancelledById        String?
+  cancelledBy          StaffUser?       @relation("CancelledBy", fields: [cancelledById], references: [id], onDelete: SetNull)
   // Set when staff mark an accepted pickup order "Not collected" (the order is cancelled; this counts as a strike for the phone).
   notCollectedAt       DateTime?
   createdAt            DateTime         @default(now())

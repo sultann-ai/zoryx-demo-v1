@@ -9,12 +9,14 @@ import {
   OrderChangeStatus,
   OrderEventType,
   Prisma,
+  StaffRole,
 } from "../../../generated/prisma/client";
 import { prisma } from "../../config/prisma";
 import { getIO } from "../../config/socket";
 import { computeOrderTotal } from "../../common/orderTotals";
 import * as inventoryService from "../inventory/inventory.service";
 import { money, recordOrderEvent } from "./orderEvents";
+import { isPaid } from "../reports/salesDefinitions";
 
 export class NoActiveBusinessDayError extends Error {}
 
@@ -1123,24 +1125,143 @@ function emitOrderStatusToTaker(order: Pick<OrderWithItems, "id" | "orderNumber"
   );
 }
 
-export async function cancelOrder(id: string, cancelledReason: string, actorId: string): Promise<OrderWithItems> {
-  const order = await prisma.$transaction(async (tx) => {
-    const existing = await tx.order.findUniqueOrThrow({ where: { id } });
-    const updated = await tx.order.update({
-      where: { id },
-      data: { status: OrderStatus.CANCELLED, cancelledReason },
-      include: orderInclude,
-    });
-    await recordOrderEvent(tx, {
-      orderId: id,
-      actorId,
-      type: OrderEventType.CANCELLED,
-      reason: cancelledReason,
-      before: cancelSnapshot(existing),
-      after: { status: OrderStatus.CANCELLED },
-    });
-    return updated;
+// ================= Cancellation =================
+
+// The only statuses an order can be cancelled from (cancelOrder). COMPLETED and CANCELLED are done;
+// SCHEDULED is cancelled through cancelScheduledOrder; IN_KITCHEN/READY are never set today.
+export const CANCELLABLE_STATUSES: readonly OrderStatus[] = [
+  OrderStatus.PENDING,
+  OrderStatus.CONFIRMED,
+  OrderStatus.AWAITING_RECEPTION,
+];
+
+// Only these roles may cancel an order that has been paid — the money has to be handed back.
+const PAID_CANCEL_ROLES: readonly StaffRole[] = [StaffRole.SUPER_ADMIN, StaffRole.POS_ADMIN];
+
+export class OrderNotCancellableError extends Error {
+  constructor(public readonly status: OrderStatus) {
+    super(notCancellableMessage(status));
+  }
+}
+
+function notCancellableMessage(status: OrderStatus): string {
+  switch (status) {
+    case OrderStatus.COMPLETED:
+      return "Completed orders can't be cancelled";
+    case OrderStatus.CANCELLED:
+      return "This order is already cancelled";
+    case OrderStatus.SCHEDULED:
+      return "Scheduled orders are cancelled from Scheduled orders, not here";
+    case OrderStatus.IN_KITCHEN:
+    case OrderStatus.READY:
+      return `This order is ${status} and can't be cancelled`;
+    default:
+      // Read as cancellable a moment ago, but its status changed before the cancel landed.
+      return "This order just changed — reload it and try again";
+  }
+}
+
+export class PaidOrderCancelForbiddenError extends Error {}
+
+export interface CancelOrderInput {
+  reason: string;
+  actorId: string;
+  actorRole: StaffRole;
+}
+
+type CancellableOrder = Prisma.OrderGetPayload<{ include: { items: { select: { id: true; kitchenId: true } } } }>;
+
+function assertCancellable(order: CancellableOrder, actorRole: StaffRole): void {
+  if (!CANCELLABLE_STATUSES.includes(order.status)) {
+    throw new OrderNotCancellableError(order.status);
+  }
+  if (isPaid(order) && !PAID_CANCEL_ROLES.includes(actorRole)) {
+    throw new PaidOrderCancelForbiddenError();
+  }
+}
+
+// The one cancel write, shared by every path that cancels a live order. Conditional on the status
+// read before, so a concurrent accept/deliver/cancel can't be overwritten — and that UPDATE row-locks
+// the order, so the stock return below can only ever happen once. Returns stock the order still has
+// deducted (see restockForCancelledOrder) and records the CANCELLED event, all in `tx`.
+async function cancelInTransaction(
+  tx: Prisma.TransactionClient,
+  existing: CancellableOrder,
+  input: { reason: string; actorId: string },
+): Promise<OrderWithItems> {
+  const result = await tx.order.updateMany({
+    where: { id: existing.id, status: existing.status },
+    data: {
+      status: OrderStatus.CANCELLED,
+      cancelledReason: input.reason,
+      cancelledAt: new Date(),
+      cancelledById: input.actorId,
+    },
   });
+  if (result.count === 0) {
+    const now = await tx.order.findUnique({ where: { id: existing.id }, select: { status: true } });
+    throw new OrderNotCancellableError(now?.status ?? existing.status);
+  }
+
+  const { restocked } = await inventoryService.restockForCancelledOrder(tx, {
+    orderId: existing.id,
+    performedById: input.actorId,
+  });
+  await recordOrderEvent(tx, {
+    orderId: existing.id,
+    actorId: input.actorId,
+    type: OrderEventType.CANCELLED,
+    reason: input.reason,
+    before: cancelSnapshot(existing),
+    after: { status: OrderStatus.CANCELLED, restocked },
+  });
+  return tx.order.findUniqueOrThrow({ where: { id: existing.id }, include: orderInclude });
+}
+
+// Kitchens take the cancelled order's items off their display: one "order:cancelled" per kitchen
+// room with that kitchen's item ids, and one to pos-admin with all of them. Only for an order that
+// had reached the kitchens (an order still at reception never did).
+function emitOrderCancelled(
+  order: { id: string; orderNumber: number },
+  items: { id: string; kitchenId: string }[],
+  reachedKitchens: boolean,
+): void {
+  emitItemsGone("order:cancelled", order, items, reachedKitchens);
+}
+
+function emitItemsGone(
+  event: "order:cancelled" | "order-item:removed",
+  order: { id: string; orderNumber: number },
+  items: { id: string; kitchenId: string }[],
+  reachedKitchens: boolean,
+): void {
+  emitSafely(() => {
+    const io = getIO();
+    if (reachedKitchens) {
+      const idsByKitchen = new Map<string, string[]>();
+      for (const item of items) {
+        idsByKitchen.set(item.kitchenId, [...(idsByKitchen.get(item.kitchenId) ?? []), item.id]);
+      }
+      for (const [kitchenId, itemIds] of idsByKitchen) {
+        io.to(`kitchen:${kitchenId}`).emit(event, { orderId: order.id, orderNumber: order.orderNumber, itemIds });
+      }
+    }
+    io.to("pos-admin").emit(event, { orderId: order.id, orderNumber: order.orderNumber, itemIds: items.map((item) => item.id) });
+  });
+}
+
+// Staff cancel (POS_ADMIN/SUPER_ADMIN, with a reason). Allowed from CANCELLABLE_STATUSES only; a
+// paid order only by PAID_CANCEL_ROLES. Stock the order deducted is returned, its kitchens are told.
+export async function cancelOrder(id: string, input: CancelOrderInput): Promise<OrderWithItems> {
+  const existing = await prisma.order.findUnique({ where: { id }, include: { items: { select: { id: true, kitchenId: true } } } });
+  if (!existing) {
+    throw new OrderNotFoundError();
+  }
+  assertCancellable(existing, input.actorRole);
+
+  const order = await prisma.$transaction((tx) => cancelInTransaction(tx, existing, input));
+
+  emitOrderCancelled(order, existing.items, existing.status !== OrderStatus.AWAITING_RECEPTION);
   emitOrderStatusToTaker(order);
   return order;
 }
@@ -1161,29 +1282,21 @@ function cancelSnapshot(order: { status: OrderStatus; paymentStatus: PaymentStat
 // SUPER_ADMIN only) and must belong to the caller. Nothing to restock: an AWAITING_RECEPTION
 // order never deducted inventory in the first place.
 export async function cancelOwnAwaitingOrder(id: string, staffId: string): Promise<OrderWithItems> {
-  const order = await prisma.order.findFirst({ where: { id, placedByStaffId: staffId } });
+  const order = await prisma.order.findFirst({
+    where: { id, placedByStaffId: staffId },
+    include: { items: { select: { id: true, kitchenId: true } } },
+  });
   if (!order) {
     throw new OrderNotFoundError();
   }
   if (order.status !== OrderStatus.AWAITING_RECEPTION) {
     throw new OrderNotAwaitingReceptionError();
   }
-  const updated = await prisma.$transaction(async (tx) => {
-    const cancelled = await tx.order.update({
-      where: { id },
-      data: { status: OrderStatus.CANCELLED, cancelledReason: "Cancelled by the order taker" },
-      include: orderInclude,
-    });
-    await recordOrderEvent(tx, {
-      orderId: id,
-      actorId: staffId,
-      type: OrderEventType.CANCELLED,
-      reason: "Cancelled by the order taker",
-      before: cancelSnapshot(order),
-      after: { status: OrderStatus.CANCELLED },
-    });
-    return cancelled;
-  });
+  // Reception may have taken payment on it already — then only they can cancel it.
+  assertCancellable(order, StaffRole.ORDER_TAKER);
+  const updated = await prisma.$transaction((tx) =>
+    cancelInTransaction(tx, order, { reason: "Cancelled by the order taker", actorId: staffId }),
+  );
   emitSafely(() => getIO().to("pos-admin").emit("order:updated", { orderId: updated.id, orderNumber: updated.orderNumber }));
   emitOrderStatusToTaker(updated);
   return updated;
@@ -1270,6 +1383,8 @@ export async function reviewOrderChange(changeId: string, reviewerId: string, ap
   if (change.status !== OrderChangeStatus.PENDING) throw new OrderChangeAlreadyReviewedError();
   const order = await prisma.order.findUnique({ where: { id: change.orderId }, include: { items: true } });
   if (!order) throw new OrderNotFoundError();
+  // The review route is reception-only (POS_ADMIN/SUPER_ADMIN), so a paid order may be cancelled here.
+  if (approved && change.kind === OrderChangeKind.CANCEL) assertCancellable(order, StaffRole.POS_ADMIN);
   const snapshot = change.previousState as unknown as OrderChangeSnapshot;
   if (order.updatedAt.toISOString() !== snapshot.orderUpdatedAt) throw new OrderChangeStaleError();
   if (!approved) {
@@ -1285,23 +1400,16 @@ export async function reviewOrderChange(changeId: string, reviewerId: string, ap
   }
   if (change.kind === OrderChangeKind.CANCEL) {
     const reviewed = await prisma.$transaction(async (tx) => {
-      await tx.order.update({
-        where: { id: order.id },
-        data: { status: OrderStatus.CANCELLED, cancelledReason: "Cancellation approved by reception" },
-      });
-      await recordOrderEvent(tx, {
-        orderId: order.id,
+      await cancelInTransaction(tx, order, {
+        reason: change.reason ? `Cancellation approved by reception: ${change.reason}` : "Cancellation approved by reception",
         actorId: reviewerId,
-        type: OrderEventType.CANCELLED,
-        reason: change.reason ?? "Cancellation approved by reception",
-        before: cancelSnapshot(order),
-        after: { status: OrderStatus.CANCELLED },
       });
       return tx.orderChange.update({
         where: { id: changeId },
         data: { status: OrderChangeStatus.APPROVED, reviewedById: reviewerId, reviewedAt: new Date() },
       });
     });
+    emitOrderCancelled(order, order.items, true);
     emitOrderStatusToTaker({ ...order, status: OrderStatus.CANCELLED });
     emitSafely(() => getIO().to(`user:${change.requestedById}`).emit("order:change-reviewed", {
       changeId: reviewed.id, orderId: order.id, status: reviewed.status,
@@ -1893,6 +2001,8 @@ export async function rejectOrder(orderId: string, input: RejectOrderInput, acto
       data: {
         status: OrderStatus.CANCELLED,
         cancelledReason: input.reason,
+        cancelledAt: new Date(),
+        cancelledById: actorId,
         ...(input.paymentRejected ? { paymentStatus: PaymentStatus.REJECTED } : {}),
       },
       include: orderInclude,
@@ -1970,7 +2080,14 @@ export const NOT_COLLECTED_REASON = "Not collected";
 export async function markOrderNotCollected(orderId: string, actorId: string): Promise<OrderWithItems> {
   const existing = await prisma.order.findUnique({
     where: { id: orderId },
-    select: { status: true, source: true, type: true, paymentStatus: true, totalAmount: true },
+    select: {
+      status: true,
+      source: true,
+      type: true,
+      paymentStatus: true,
+      totalAmount: true,
+      items: { select: { id: true, kitchenId: true } },
+    },
   });
   if (!existing) {
     throw new OrderNotFoundError();
@@ -1985,7 +2102,13 @@ export async function markOrderNotCollected(orderId: string, actorId: string): P
   const updated = await prisma.$transaction(async (tx) => {
     const result = await tx.order.updateMany({
       where: { id: orderId, status: { in: DELIVERABLE_STATUSES } },
-      data: { status: OrderStatus.CANCELLED, cancelledReason: NOT_COLLECTED_REASON, notCollectedAt: new Date() },
+      data: {
+        status: OrderStatus.CANCELLED,
+        cancelledReason: NOT_COLLECTED_REASON,
+        notCollectedAt: new Date(),
+        cancelledAt: new Date(),
+        cancelledById: actorId,
+      },
     });
     if (result.count > 0) {
       await recordOrderEvent(tx, {
@@ -2005,6 +2128,7 @@ export async function markOrderNotCollected(orderId: string, actorId: string): P
   }
   const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId }, include: orderInclude });
   emitSafely(() => getIO().to("pos-admin").emit("order:updated", { orderId: order.id, orderNumber: order.orderNumber }));
+  emitOrderCancelled(order, existing.items, true);
   emitOrderStatusToTaker(order);
   return order;
 }
@@ -2326,6 +2450,7 @@ export async function removeOrderItem(orderId: string, itemId: string, performed
     return tx.order.findUniqueOrThrow({ where: { id: orderId }, include: orderInclude });
   });
 
+  emitItemsGone("order-item:removed", updatedOrder, [item], true);
   return updatedOrder;
 }
 
@@ -2458,7 +2583,7 @@ export async function releaseScheduledOrder(
 // changed nothing.
 async function transitionScheduledOrder(
   orderId: string,
-  data: Prisma.OrderUpdateManyMutationInput,
+  data: Prisma.OrderUncheckedUpdateManyInput,
   extraWhere: Prisma.OrderWhereInput = {},
   // Runs inside the same transaction, only when this call made the change (e.g. its audit event).
   onChanged?: (tx: Prisma.TransactionClient, order: OrderWithItems) => Promise<unknown>,
@@ -2553,7 +2678,7 @@ export function updateScheduledItems(
 export async function cancelScheduledOrder(orderId: string, reason: string, actorId: string): Promise<OrderWithItems> {
   const { order, exists } = await transitionScheduledOrder(
     orderId,
-    { status: OrderStatus.CANCELLED, cancelledReason: reason },
+    { status: OrderStatus.CANCELLED, cancelledReason: reason, cancelledAt: new Date(), cancelledById: actorId },
     {},
     (tx, cancelled) =>
       recordOrderEvent(tx, {

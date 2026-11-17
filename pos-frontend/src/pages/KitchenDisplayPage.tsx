@@ -5,6 +5,7 @@ import type {
   KitchenQueueItem,
   NewOrderItemsSocketPayload,
   NoteUpdatedOrderItemsSocketPayload,
+  OrderItemsGoneSocketPayload,
   UpdatedOrderItemSocketPayload,
 } from "../api/kitchenQueue";
 import { kitchenQueueApi } from "../api/kitchenQueue";
@@ -122,14 +123,25 @@ export function KitchenDisplayPage() {
       setNoteUpdatedIds((prev) => withoutId(prev, payload.id));
     }
 
+    // The order was cancelled, or an item was taken off it: those cards leave the screen.
+    function handleItemsGone(payload: OrderItemsGoneSocketPayload) {
+      const goneIds = new Set(payload.itemIds);
+      setItems((prev) => prev.filter((row) => !goneIds.has(row.id)));
+      setNoteUpdatedIds((prev) => new Set([...prev].filter((id) => !goneIds.has(id))));
+    }
+
     socket.on("order-item:new", handleNewItems);
     socket.on("order-item:note-updated", handleNoteUpdated);
     socket.on("order-item:updated", handleUpdatedItem);
+    socket.on("order:cancelled", handleItemsGone);
+    socket.on("order-item:removed", handleItemsGone);
 
     return () => {
       socket.off("order-item:new", handleNewItems);
       socket.off("order-item:note-updated", handleNoteUpdated);
       socket.off("order-item:updated", handleUpdatedItem);
+      socket.off("order:cancelled", handleItemsGone);
+      socket.off("order-item:removed", handleItemsGone);
       socket.off("connect_error", handleConnectError);
       socket.disconnect();
     };

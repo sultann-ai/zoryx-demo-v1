@@ -53,10 +53,13 @@ import { formatShopTime, formatTimeUntil } from "../lib/shopTime";
 import { ORDER_SOURCE_LABEL, orderTypeLabel, PAYMENT_METHOD_LABEL } from "../lib/enumLabels";
 import { LINE_NOTE_MAX_LENGTH, normalizeLineNote } from "../lib/lineNotes";
 import { AddItemPicker } from "./orderDetail/AddItemPicker";
+import { CancelOrderModal } from "./orderDetail/CancelOrderModal";
 import { EditableLineNote } from "./orderDetail/EditableLineNote";
 import { OrderHistory } from "./orderDetail/OrderHistory";
 
 const CLOSED_STATUSES = new Set(["CANCELLED", "COMPLETED"]);
+// The only statuses the server lets PATCH /:id/cancel act on (a scheduled order uses cancel-scheduled).
+const CANCELLABLE_STATUSES = new Set(["PENDING", "CONFIRMED", "AWAITING_RECEPTION"]);
 // An accepted order that hasn't been handed over yet — the only ones "Mark delivered" applies to.
 const DELIVERABLE_STATUSES = new Set(["PENDING", "CONFIRMED", "IN_KITCHEN", "READY"]);
 
@@ -121,6 +124,7 @@ export function OrderDetailPage() {
   // Pickup only: the customer never came for it.
   const notCollectedMutation = useMarkOrderNotCollected();
   const [isNotCollectedOpen, setIsNotCollectedOpen] = useState(false);
+  const [isCancelOpen, setIsCancelOpen] = useState(false);
   const [notCollectedError, setNotCollectedError] = useState<string | null>(null);
 
   const [assignWaiterId, setAssignWaiterId] = useState("");
@@ -181,7 +185,7 @@ export function OrderDetailPage() {
     }
   }
 
-  const canCancel = !CLOSED_STATUSES.has(order.status);
+  const canCancel = CANCELLABLE_STATUSES.has(order.status);
   // An online order is one the customer is waiting for; once accepted, staff mark it handed over.
   const isOnline = order.source === "ONLINE";
   const canMarkDelivered = isOnline && DELIVERABLE_STATUSES.has(order.status);
@@ -197,7 +201,7 @@ export function OrderDetailPage() {
   // A SCHEDULED order is on hold: its items change only through "Edit items" (the
   // Scheduled list), since adding/removing/re-noting here would reach a kitchen or move stock.
   const isScheduled = order.status === "SCHEDULED";
-  const canEditItems = canCancel && order.status !== "AWAITING_RECEPTION" && !isScheduled;
+  const canEditItems = !CLOSED_STATUSES.has(order.status) && order.status !== "AWAITING_RECEPTION" && !isScheduled;
 
   async function handleMarkDelivered() {
     setDeliverError(null);
@@ -322,21 +326,10 @@ export function OrderDetailPage() {
     }
   }
 
-  async function handleCancel() {
-    const reason = window.prompt("Reason for cancelling this order:");
-    if (reason === null) {
-      return;
-    }
-    const trimmed = reason.trim();
-    if (trimmed === "") {
-      window.alert("Cancellation reason is required.");
-      return;
-    }
-    try {
-      await cancelMutation.mutateAsync({ id: orderId, cancelledReason: trimmed });
-    } catch (error) {
-      window.alert(getApiErrorMessage(error, "Failed to cancel order"));
-    }
+  // Errors are shown inside the modal (it rethrows to keep itself open).
+  async function handleCancel(reason: string) {
+    await cancelMutation.mutateAsync({ id: orderId, cancelledReason: reason });
+    setIsCancelOpen(false);
   }
 
   async function handleConfirmPayment(event: FormEvent<HTMLFormElement>) {
@@ -516,9 +509,20 @@ export function OrderDetailPage() {
               </>
             )}
             {canCancel && (
-              <Button variant="danger" onClick={handleCancel} disabled={cancelMutation.isPending}>
-                Cancel order
-              </Button>
+              <>
+                <Button variant="danger" onClick={() => setIsCancelOpen(true)} disabled={cancelMutation.isPending}>
+                  Cancel order
+                </Button>
+                <CancelOrderModal
+                  isOpen={isCancelOpen}
+                  orderNumber={orderNumber}
+                  totalAmount={order.totalAmount}
+                  isPaid={order.paymentStatus === "VERIFIED"}
+                  isCancelling={cancelMutation.isPending}
+                  onClose={() => setIsCancelOpen(false)}
+                  onConfirm={handleCancel}
+                />
+              </>
             )}
           </>
         }

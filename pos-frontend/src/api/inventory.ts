@@ -1,7 +1,8 @@
 import { apiClient } from "./client";
 
 export type InventoryTrackingType = "AUTO" | "MANUAL";
-export type InventoryTxnType = "STOCK_IN" | "STOCK_OUT" | "ADJUSTMENT";
+// RESTOCK_CANCEL is written by the server when a cancelled order's stock is returned; never sent.
+export type InventoryTxnType = "STOCK_IN" | "STOCK_OUT" | "ADJUSTMENT" | "RESTOCK_CANCEL";
 
 export interface InventoryItem {
   id: string;

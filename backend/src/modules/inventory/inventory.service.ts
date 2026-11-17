@@ -319,3 +319,60 @@ export function isUniqueConstraintError(error: unknown): boolean {
 export function isForeignKeyConstraintError(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2003";
 }
+
+// Gives back everything a cancelled order still has deducted — once. Reads the order's own stock
+// ledger (InventoryTransaction.relatedOrderId): per inventory item, STOCK_OUT minus STOCK_IN, so an
+// item removed earlier (restocked then) or an approved edit (restocked and re-deducted) is already
+// accounted for. An order that never deducted anything — gated at reception and never accepted,
+// scheduled and never released, placed by a customer with no staff to attribute it to — has no
+// ledger rows and gets nothing back. If the order already has a RESTOCK_CANCEL row, nothing is
+// done again. Must run in the cancelling transaction, after the order row is locked by its status
+// update, so two concurrent cancels can't both get here.
+export async function restockForCancelledOrder(
+  tx: Prisma.TransactionClient,
+  params: { orderId: string; performedById: string },
+): Promise<{ restocked: boolean }> {
+  const alreadyReturned = await tx.inventoryTransaction.count({
+    where: { relatedOrderId: params.orderId, type: InventoryTxnType.RESTOCK_CANCEL },
+  });
+  if (alreadyReturned > 0) {
+    return { restocked: false };
+  }
+
+  const ledger = await tx.inventoryTransaction.groupBy({
+    by: ["inventoryItemId", "type"],
+    where: { relatedOrderId: params.orderId, type: { in: [InventoryTxnType.STOCK_OUT, InventoryTxnType.STOCK_IN] } },
+    _sum: { quantity: true },
+  });
+
+  const netByInventoryItemId = new Map<string, Prisma.Decimal>();
+  for (const row of ledger) {
+    const quantity = row._sum.quantity ?? new Prisma.Decimal(0);
+    const signed = row.type === InventoryTxnType.STOCK_OUT ? quantity : quantity.negated();
+    const existing = netByInventoryItemId.get(row.inventoryItemId);
+    netByInventoryItemId.set(row.inventoryItemId, existing ? existing.plus(signed) : signed);
+  }
+
+  let restocked = false;
+  for (const [inventoryItemId, net] of netByInventoryItemId) {
+    if (!net.greaterThan(0)) {
+      continue;
+    }
+    await tx.inventoryItem.update({
+      where: { id: inventoryItemId },
+      data: { currentStock: { increment: net } },
+    });
+    await tx.inventoryTransaction.create({
+      data: {
+        inventoryItemId,
+        type: InventoryTxnType.RESTOCK_CANCEL,
+        quantity: net,
+        relatedOrderId: params.orderId,
+        performedById: params.performedById,
+        note: "Returned: order cancelled",
+      },
+    });
+    restocked = true;
+  }
+  return { restocked };
+}

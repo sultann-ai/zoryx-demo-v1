@@ -52,6 +52,7 @@ export const INVENTORY_TXN_LABEL: Record<InventoryTxnType, string> = {
   STOCK_IN: "Stock in",
   STOCK_OUT: "Stock out",
   ADJUSTMENT: "Adjustment",
+  RESTOCK_CANCEL: "Returned (order cancelled)",
 };
 
 export const VENDOR_LEDGER_ENTRY_TYPE_LABEL: Record<VendorLedgerEntryType, string> = {

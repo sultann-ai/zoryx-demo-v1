@@ -3,7 +3,8 @@ import { InventoryTrackingType, InventoryTxnType, Prisma } from "../../../genera
 import * as inventoryService from "./inventory.service";
 
 const VALID_TRACKING_TYPES = Object.values(InventoryTrackingType);
-const VALID_TXN_TYPES = Object.values(InventoryTxnType);
+// The manual adjust endpoint's types only — RESTOCK_CANCEL is written by order cancellation alone.
+const VALID_TXN_TYPES = [InventoryTxnType.STOCK_IN, InventoryTxnType.STOCK_OUT, InventoryTxnType.ADJUSTMENT];
 
 function isOneOf<T extends string>(value: unknown, options: readonly T[]): value is T {
   return typeof value === "string" && (options as readonly string[]).includes(value);

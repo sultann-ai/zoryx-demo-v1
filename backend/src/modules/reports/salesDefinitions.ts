@@ -1,4 +1,4 @@
-import { OrderStatus, Prisma } from "../../../generated/prisma/client";
+import { OrderStatus, PaymentStatus, Prisma } from "../../../generated/prisma/client";
 import { PK_TIME_ZONE } from "../../common/pkTime";
 
 // The ONE place that decides what "sales", "orders" and "cancelled" mean. The dashboard, the
@@ -19,6 +19,14 @@ export const NOT_COUNTED_STATUSES: readonly OrderStatus[] = [
   OrderStatus.AWAITING_RECEPTION,
   OrderStatus.SCHEDULED,
 ];
+
+// "Paid" — the one definition, for cash and online alike: a CASH order staff marked paid (Confirm
+// Payment sets VERIFIED), or an ONLINE order whose payment was verified.
+export const PAID_PAYMENT_STATUS = PaymentStatus.VERIFIED;
+
+export function isPaid(order: { paymentStatus: string }): boolean {
+  return order.paymentStatus === PAID_PAYMENT_STATUS;
+}
 
 export function isCountedStatus(status: string): boolean {
   return !(NOT_COUNTED_STATUSES as readonly string[]).includes(status);

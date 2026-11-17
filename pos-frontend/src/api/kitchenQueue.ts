@@ -89,3 +89,11 @@ export const kitchenQueueApi = {
     return data;
   },
 };
+
+// "order:cancelled" (the whole order) and "order-item:removed" (one line taken off it) — each
+// kitchen room gets only its own item ids; the Kitchen Display drops those cards.
+export interface OrderItemsGoneSocketPayload {
+  orderId: string;
+  orderNumber: number;
+  itemIds: string[];
+}

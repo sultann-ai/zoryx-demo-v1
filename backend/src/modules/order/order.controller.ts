@@ -387,26 +387,56 @@ export async function cancelOrder(req: Request, res: Response) {
         res.status(409).json({ error: "This order has already been reviewed and can no longer be cancelled this way" });
         return;
       }
+      if (respondToCancelError(error, res)) {
+        return;
+      }
       throw error;
     }
     return;
   }
 
-  if (typeof cancelledReason !== "string" || cancelledReason.trim().length === 0) {
-    res.status(400).json({ error: "cancelledReason is required" });
+  const reason = typeof cancelledReason === "string" ? cancelledReason.trim() : "";
+  if (reason.length === 0) {
+    res.status(400).json({ error: "A reason is required to cancel an order" });
+    return;
+  }
+  if (reason.length > CANCEL_REASON_MAX_LENGTH) {
+    res.status(400).json({ error: `The reason must be at most ${CANCEL_REASON_MAX_LENGTH} characters` });
     return;
   }
 
   try {
-    const order = await orderService.cancelOrder(req.params.id as string, cancelledReason.trim(), req.staff.id);
+    const order = await orderService.cancelOrder(req.params.id as string, {
+      reason,
+      actorId: req.staff.id,
+      actorRole: req.staff.role,
+    });
     res.json(order);
   } catch (error) {
-    if (orderService.isNotFoundError(error)) {
+    if (error instanceof orderService.OrderNotFoundError) {
       res.status(404).json({ error: "Order not found" });
+      return;
+    }
+    if (respondToCancelError(error, res)) {
       return;
     }
     throw error;
   }
+}
+
+const CANCEL_REASON_MAX_LENGTH = 200;
+
+// The cancel rules' refusals, shared by PATCH /:id/cancel and an approved CANCEL change request.
+function respondToCancelError(error: unknown, res: Response): boolean {
+  if (error instanceof orderService.OrderNotCancellableError) {
+    res.status(409).json({ code: "NOT_CANCELLABLE", error: error.message, status: error.status });
+    return true;
+  }
+  if (error instanceof orderService.PaidOrderCancelForbiddenError) {
+    res.status(403).json({ error: "This order has been paid — only a Super Admin or POS Admin can cancel it" });
+    return true;
+  }
+  return false;
 }
 
 // ================= Reception review (AWAITING_RECEPTION) =================
@@ -648,6 +678,9 @@ export async function createOrderChange(req: Request, res: Response) {
       }
       if (error instanceof orderService.OrderChangeStaleError) {
         res.status(409).json({ error: "The order changed after this request was submitted" });
+        return;
+      }
+      if (respondToCancelError(error, res)) {
         return;
       }
       if (error instanceof orderService.InvalidOrderItemsError) {

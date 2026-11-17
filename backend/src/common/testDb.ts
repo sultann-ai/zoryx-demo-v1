@@ -85,3 +85,11 @@ export function createFakeIO() {
   });
   return { io: { to: (room: string) => target([room]) }, emits };
 }
+
+// One recorder per test file, visible to both the socket mock and the test:
+//   vi.mock("../../config/socket", async () => {
+//     const { sharedFakeIO } = await import("../../common/testDb");
+//     return { getIO: () => sharedFakeIO.io };
+//   });
+// then read (and reset with .length = 0) sharedFakeIO.emits in the test.
+export const sharedFakeIO = createFakeIO();

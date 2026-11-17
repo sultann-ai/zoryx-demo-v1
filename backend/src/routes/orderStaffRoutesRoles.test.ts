@@ -55,7 +55,7 @@ async function call(method: string, path: string, role?: string, body: unknown =
   return fetch(`${baseUrl}${path}`, {
     method,
     headers: { "Content-Type": "application/json", ...(role ? { Authorization: `Bearer ${tokenFor(role)}` } : {}) },
-    ...(method === "POST" ? { body: JSON.stringify(body) } : {}),
+    ...(method === "POST" || method === "PATCH" ? { body: JSON.stringify(body) } : {}),
   });
 }
 
@@ -112,6 +112,29 @@ describe("POST /api/pos/orders/:id/not-collected", () => {
       expect(response.status, JSON.stringify(row)).toBe(409);
       expect(((await response.json()) as { code: string }).code).toBe("NOT_COLLECTABLE");
     }
+  });
+});
+
+describe("PATCH /api/pos/orders/:id/cancel", () => {
+  const path = "/api/pos/orders/some-id/cancel";
+
+  it("needs a reason of 1-200 characters from POS_ADMIN/SUPER_ADMIN", async () => {
+    state.orderRow = { id: "some-id", status: "PENDING", paymentStatus: "PENDING", items: [] };
+    for (const body of [{}, { cancelledReason: "   " }, { cancelledReason: "x".repeat(201) }]) {
+      expect((await call("PATCH", path, "SUPER_ADMIN", body)).status, JSON.stringify(body).slice(0, 40)).toBe(400);
+    }
+  });
+
+  it("is a 409 NOT_CANCELLABLE with a clear message for a completed order", async () => {
+    state.orderRow = { id: "some-id", status: "COMPLETED", paymentStatus: "VERIFIED", items: [] };
+    const response = await call("PATCH", path, "POS_ADMIN", { cancelledReason: "Customer complained" });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ code: "NOT_CANCELLABLE", error: "Completed orders can't be cancelled" });
+  });
+
+  it("is a 404 for an unknown order", async () => {
+    state.orderRow = null;
+    expect((await call("PATCH", path, "SUPER_ADMIN", { cancelledReason: "x" })).status).toBe(404);
   });
 });
 
