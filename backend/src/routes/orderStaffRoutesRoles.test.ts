@@ -18,6 +18,10 @@ vi.mock("../config/prisma", () => {
         if (property === "order") {
           return new Proxy({}, { get: (_t, method) => (method === "findUnique" ? async () => state.orderRow : async () => []) });
         }
+        // requireAuth loads the staff row on every request: answer "active".
+        if (property === "staffUser") {
+          return new Proxy({}, { get: (_t, method) => (method === "findUnique" ? async () => ({ id: "staff-1", isActive: true }) : async () => []) });
+        }
         return new Proxy({}, { get: () => async () => [] });
       },
     },
