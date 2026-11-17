@@ -191,6 +191,8 @@ export interface Analytics {
   topItemsByRevenue: ItemRow[];
   topItemsByQuantity: ItemRow[];
   cancelledReasons: { reason: string; count: number; value: string }[];
+  // Discounts on the period's sales orders, per staff member who set them (Order.discountById).
+  discounts: DiscountsGiven;
   weekly: WeekRow[];
   weekday: { from: string; to: string; rows: WeekdayRow[] };
 }
@@ -495,6 +497,37 @@ async function fetchCancelledReasons(db: Db, from: string, to: string) {
   return rows.map((row) => ({ reason: row.reason, count: row.count, value: money(new Prisma.Decimal(row.value)) }));
 }
 
+export interface DiscountsGiven {
+  total: string;
+  count: number;
+  // staffId null: a discount set before attribution was recorded (phase 1).
+  byStaff: { staffId: string | null; name: string; count: number; amount: string }[];
+}
+
+async function fetchDiscounts(db: Db, from: string, to: string): Promise<DiscountsGiven> {
+  const rows = await db.$queryRaw<{ staffId: string | null; name: string | null; count: number; amount: Prisma.Decimal }[]>(Prisma.sql`
+    SELECT o."discountById" AS "staffId", s."name" AS "name",
+           COUNT(*)::int AS "count", SUM(o."discount") AS "amount"
+    FROM "Order" o
+    JOIN "BusinessDay" bd ON bd."id" = o."businessDayId"
+    LEFT JOIN "StaffUser" s ON s."id" = o."discountById"
+    WHERE ${SQL_COUNTED} AND o."discount" > 0 AND ${dateFilter(from, to)}
+    GROUP BY o."discountById", s."name"
+    ORDER BY 4 DESC, 2 ASC
+  `);
+  const byStaff = rows.map((row) => ({
+    staffId: row.staffId,
+    name: row.name ?? "Not recorded",
+    count: row.count,
+    amount: money(new Prisma.Decimal(row.amount)),
+  }));
+  return {
+    total: money(sum(rows.map((row) => new Prisma.Decimal(row.amount)))),
+    count: rows.reduce((total, row) => total + row.count, 0),
+    byStaff,
+  };
+}
+
 export interface AnalyticsParams {
   period: Period;
   custom?: { from: string; to: string } | undefined;
@@ -532,6 +565,7 @@ export async function getAnalytics(params: AnalyticsParams, db: Db = prisma): Pr
     topRevenue,
     topQuantity,
     cancelledReasons,
+    discounts,
   ] = await Promise.all([
     fetchBusinessDayStats(db, { from: earliest, to: latest }),
     financials ? fetchExpenses(db, range.previousFrom, range.to) : Promise.resolve([] as ExpenseRow[]),
@@ -543,6 +577,7 @@ export async function getAnalytics(params: AnalyticsParams, db: Db = prisma): Pr
     fetchItems(db, range.from, range.to, "revenue"),
     fetchItems(db, range.from, range.to, "quantity"),
     fetchCancelledReasons(db, range.from, range.to),
+    fetchDiscounts(db, range.from, range.to),
   ]);
 
   const currentStats = allStats.filter((stat) => inRange(stat, range.from, range.to));
@@ -586,6 +621,7 @@ export async function getAnalytics(params: AnalyticsParams, db: Db = prisma): Pr
     topItemsByRevenue: topRevenue.map(toItemRow),
     topItemsByQuantity: topQuantity.map(toItemRow),
     cancelledReasons,
+    discounts,
     weekly: buildWeekly(allStats, today),
     weekday: buildWeekday(allStats, range),
   };

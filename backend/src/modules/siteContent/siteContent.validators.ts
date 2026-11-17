@@ -50,6 +50,14 @@ const text = (field: string, max: number): FieldParser => (value) => parseRequir
 const nullableText = (field: string, max: number): FieldParser => (value) => parseNullableText(field, value, max);
 const bool = (field: string): FieldParser => (value) => parseBoolean(field, value);
 const money = (field: string): FieldParser => (value) => parseMoney(field, value);
+// A percentage 0-100 with at most 2 decimal places.
+const percent = (field: string): FieldParser => (value) => {
+  const parsed = parseMoney(field, value);
+  if (parsed.ok && parsed.value.greaterThan(100)) {
+    return { ok: false, error: `${field} must be between 0 and 100` };
+  }
+  return parsed;
+};
 const sortOrder: FieldParser = (value) => parseSortOrder(value);
 
 const PHONE_PATTERN = /^[0-9+()\-\s]{5,30}$/;
@@ -86,6 +94,8 @@ const SITE_SETTINGS_SPECS: FieldSpecs = {
   facebookUrl: (value) => parseNullableHttpUrl("facebookUrl", value),
   instagramUrl: (value) => parseNullableHttpUrl("instagramUrl", value),
   tiktokUrl: (value) => parseNullableHttpUrl("tiktokUrl", value),
+  // Only a SUPER_ADMIN may change it (checked in the controller).
+  maxDiscountPercentPosAdmin: percent("maxDiscountPercentPosAdmin"),
 };
 
 export function parseSiteSettingsUpdate(body: Record<string, unknown>) {

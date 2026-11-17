@@ -101,6 +101,24 @@ describe("website-content admin routes", () => {
   });
 });
 
+describe("the POS Admin discount cap in site settings", () => {
+  it("can be changed by a SUPER_ADMIN only", async () => {
+    const body = { maxDiscountPercentPosAdmin: 25 };
+    for (const role of ["POS_ADMIN", "ONLINE_ADMIN"]) {
+      const response = await call("PUT", "/api/pos/site-settings", role, body);
+      expect(response.status, role).toBe(403);
+      expect(((await response.json()) as { error: string }).error).toBe("Only a Super Admin can change the discount cap");
+    }
+    expect([401, 403]).not.toContain((await call("PUT", "/api/pos/site-settings", "SUPER_ADMIN", body)).status);
+  });
+
+  it("must be a percentage between 0 and 100", async () => {
+    for (const value of [-1, 100.01, "lots"]) {
+      expect((await call("PUT", "/api/pos/site-settings", "SUPER_ADMIN", { maxDiscountPercentPosAdmin: value })).status, String(value)).toBe(400);
+    }
+  });
+});
+
 describe("ONLINE_ADMIN can never reach prices or kitchens", () => {
   it("is refused (403) on every existing menu/deal/category write", async () => {
     for (const [method, path] of [

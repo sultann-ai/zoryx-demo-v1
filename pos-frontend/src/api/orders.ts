@@ -153,6 +153,8 @@ interface OrderBase {
   // Set only once a CASH order's payment is confirmed (see updatePaymentStatus); null before
   // that and cleared back to null if payment is reversed to PENDING.
   paidAmount: string | null;
+  // Why the discount was given (phase 1); who and when are in the order's History.
+  discountReason: string | null;
   notes: string | null;
   cancelledReason: string | null;
   createdAt: string;
@@ -273,6 +275,8 @@ export interface AcceptOrderInput {
   paymentMethod?: PaymentMethod;
   // Non-negative, replaces the order's current discount and recomputes its total.
   discount?: number;
+  // Required when the discount changes to above 0 (1-200 characters).
+  discountReason?: string;
   // Required (and must be true) to accept an ONLINE-sourced, ONLINE-paid order — confirms
   // reception checked the payment screenshot before sending it to the kitchen.
   paymentVerified?: boolean;
@@ -368,7 +372,8 @@ export const ordersApi = {
   updatePaymentStatus: async (
     id: string,
     paymentStatus: "PENDING" | "VERIFIED",
-    options?: { discount?: number; paidAmount?: number },
+    // discountReason: required when `discount` changes to above 0 (1-200 characters).
+    options?: { discount?: number; discountReason?: string; paidAmount?: number },
   ): Promise<OrderDetail> => {
     const { data } = await apiClient.patch<OrderDetail>(`/api/pos/orders/${id}/payment-status`, {
       paymentStatus,

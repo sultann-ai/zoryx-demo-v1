@@ -16,6 +16,7 @@ import { getIO } from "../../config/socket";
 import { computeOrderTotal } from "../../common/orderTotals";
 import * as inventoryService from "../inventory/inventory.service";
 import { money, recordOrderEvent } from "./orderEvents";
+import { DiscountActor, checkDiscountChange, discountAttribution, loadDiscountCap } from "./discountPolicy";
 import { isPaid } from "../reports/salesDefinitions";
 
 export class NoActiveBusinessDayError extends Error {}
@@ -471,6 +472,8 @@ export interface CreateOrderInput {
   customerAddressId?: string;
   deliveryAddress?: string;
   discount?: Prisma.Decimal;
+  // Who gives the discount and why — required (and the cap applied) whenever discount > 0.
+  discountBy?: DiscountActor;
   notes?: string;
   status?: OrderStatus;
   paymentStatus?: PaymentStatus;
@@ -867,6 +870,24 @@ export async function createOrder(input: CreateOrderInput): Promise<OrderWithIte
   if (input.maxTotal !== undefined && totalAmount.greaterThan(input.maxTotal)) {
     throw new OrderTooLargeError();
   }
+  if (totalAmount.isNegative()) {
+    throw new DiscountExceedsTotalError();
+  }
+
+  let discountChange: ReturnType<typeof checkDiscountChange> = { changed: false };
+  if (discount.greaterThan(0)) {
+    if (!input.discountBy) {
+      // Only staff routes may discount, and they always say who; anything else is a bug.
+      throw new Error("createOrder: a discount needs discountBy");
+    }
+    discountChange = checkDiscountChange({
+      next: discount,
+      current: new Prisma.Decimal(0),
+      subtotal: itemsTotal.plus(dealLinesTotal),
+      actor: input.discountBy,
+      capPercent: await loadDiscountCap(prisma),
+    });
+  }
 
   const businessDayId = activeBusinessDay.id;
   const isAwaitingReception = input.status === OrderStatus.AWAITING_RECEPTION;
@@ -898,6 +919,7 @@ export async function createOrder(input: CreateOrderInput): Promise<OrderWithIte
         paymentMethod: input.paymentMethod,
         totalAmount,
         discount,
+        ...(discountChange.changed && input.discountBy ? discountAttribution(input.discountBy, discountChange.reason) : {}),
         ...(input.placedByStaffId !== undefined ? { placedByStaffId: input.placedByStaffId } : {}),
         ...(input.diningAreaId !== undefined ? { diningAreaId: input.diningAreaId } : {}),
         ...(input.waiterId !== undefined ? { waiterId: input.waiterId } : {}),
@@ -982,11 +1004,12 @@ export async function createOrder(input: CreateOrderInput): Promise<OrderWithIte
       });
     }
 
-    if (discount.greaterThan(0) && input.placedByStaffId !== undefined) {
+    if (discountChange.changed && input.discountBy) {
       await recordOrderEvent(tx, {
         orderId: createdOrder.id,
-        actorId: input.placedByStaffId,
+        actorId: input.discountBy.actorId,
         type: OrderEventType.DISCOUNT_SET,
+        reason: discountChange.reason,
         before: { discount: money(new Prisma.Decimal(0)), totalAmount: money(totalAmount.plus(discount)) },
         after: { discount: money(discount), totalAmount: money(totalAmount) },
       });
@@ -1664,8 +1687,10 @@ export interface UpdateSubmissionInput {
   // POS_ADMIN/SUPER_ADMIN only — checked by the controller before this is ever set.
   paymentMethod?: PaymentMethod;
   discount?: Prisma.Decimal;
-  // Who made the edit — recorded on the DISCOUNT_SET event when the discount changes.
+  // Who made the edit, their role and why the discount changed (if it does) — see discountPolicy.
   actorId?: string;
+  actorRole?: StaffRole;
+  discountReason?: string;
 }
 
 // Replaces an AWAITING_RECEPTION order's contents wholesale (delete-then-recreate, unlike
@@ -1725,6 +1750,20 @@ async function replaceOrderContents(
   if (totalAmount.isNegative()) {
     throw new DiscountExceedsTotalError();
   }
+  const discountActor: DiscountActor | undefined =
+    input.actorId !== undefined
+      ? { actorId: input.actorId, role: input.actorRole ?? StaffRole.POS_ADMIN, reason: input.discountReason ?? null }
+      : undefined;
+  const discountChange =
+    input.discount !== undefined && discountActor
+      ? checkDiscountChange({
+          next: discount,
+          current: existing.discount,
+          subtotal: itemsTotal.plus(dealLinesTotal),
+          actor: discountActor,
+          capPercent: await loadDiscountCap(prisma),
+        })
+      : ({ changed: false } as const);
 
   return prisma.$transaction(async (tx) => {
     const locked = await tx.order.updateMany({
@@ -1745,17 +1784,19 @@ async function replaceOrderContents(
       data: {
         totalAmount,
         discount,
+        ...(discountChange.changed && discountActor ? discountAttribution(discountActor, discountChange.reason) : {}),
         ...(input.notes !== undefined ? { notes: input.notes } : {}),
         ...(input.paymentMethod !== undefined ? { paymentMethod: input.paymentMethod } : {}),
         items: { create: orderItemsCreateData },
       },
     });
 
-    if (!discount.equals(existing.discount)) {
+    if (discountChange.changed) {
       await recordOrderEvent(tx, {
         orderId,
         actorId: input.actorId ?? null,
         type: OrderEventType.DISCOUNT_SET,
+        reason: discountChange.reason,
         before: { discount: money(existing.discount), totalAmount: money(existing.totalAmount) },
         after: { discount: money(discount), totalAmount: money(totalAmount) },
       });
@@ -1797,6 +1838,8 @@ async function replaceOrderContents(
 export interface AcceptOrderInput {
   paymentMethod?: PaymentMethod;
   discount?: Prisma.Decimal;
+  // Required when `discount` changes the order's discount to above 0 (discountPolicy).
+  discountReason?: string;
   paymentVerified?: boolean;
 }
 
@@ -1809,7 +1852,7 @@ const VALID_PAYMENT_METHODS = Object.values(PaymentMethod);
 // without a database. Whether paymentVerified is actually *required* (an online order
 // paid ONLINE) depends on the order itself — that's acceptOrder's job, not this.
 export function parseAcceptInput(raw: unknown): AcceptOrderInput {
-  const { paymentMethod, discount, paymentVerified, ...rest } = (raw ?? {}) as Record<string, unknown>;
+  const { paymentMethod, discount, discountReason, paymentVerified, ...rest } = (raw ?? {}) as Record<string, unknown>;
   if (Object.keys(rest).length > 0) {
     throw new InvalidReceptionActionError(`accept body has unknown field(s): ${Object.keys(rest).join(", ")}`);
   }
@@ -1833,9 +1876,13 @@ export function parseAcceptInput(raw: unknown): AcceptOrderInput {
   if (paymentVerified !== undefined && typeof paymentVerified !== "boolean") {
     throw new InvalidReceptionActionError("paymentVerified must be a boolean");
   }
+  if (discountReason !== undefined && typeof discountReason !== "string") {
+    throw new InvalidReceptionActionError("discountReason must be a string");
+  }
   return {
     ...(paymentMethod !== undefined ? { paymentMethod: paymentMethod as PaymentMethod } : {}),
     ...(discountDecimal !== undefined ? { discount: discountDecimal } : {}),
+    ...(discountReason !== undefined ? { discountReason } : {}),
     ...(paymentVerified !== undefined ? { paymentVerified } : {}),
   };
 }
@@ -1846,7 +1893,13 @@ export function parseAcceptInput(raw: unknown): AcceptOrderInput {
 // staff-placed order. After commit, pushes to the kitchen(s) via the same function
 // createOrder uses — a kitchen never learns about an order any other way than this or a
 // direct POS createOrder.
-export async function acceptOrder(orderId: string, acceptedById: string, input: AcceptOrderInput): Promise<OrderWithItems> {
+export async function acceptOrder(
+  orderId: string,
+  acceptedById: string,
+  input: AcceptOrderInput,
+  // For the discount cap (discountPolicy). Defaults to the capped role.
+  actorRole: StaffRole = StaffRole.POS_ADMIN,
+): Promise<OrderWithItems> {
   const existing = await prisma.order.findUnique({
     where: { id: orderId },
     include: {
@@ -1879,6 +1932,8 @@ export async function acceptOrder(orderId: string, acceptedById: string, input: 
   }
 
   let totalAmount: Prisma.Decimal | undefined;
+  let discountChange: ReturnType<typeof checkDiscountChange> = { changed: false };
+  const discountActor: DiscountActor = { actorId: acceptedById, role: actorRole, reason: input.discountReason ?? null };
   if (input.discount !== undefined) {
     const itemsTotal = existing.items.reduce((sum, item) => sum.plus(item.subtotal), new Prisma.Decimal(0));
     const dealLinesTotal = existing.dealLines.reduce((sum, line) => sum.plus(line.subtotal), new Prisma.Decimal(0));
@@ -1891,6 +1946,13 @@ export async function acceptOrder(orderId: string, acceptedById: string, input: 
     if (totalAmount.isNegative()) {
       throw new DiscountExceedsTotalError();
     }
+    discountChange = checkDiscountChange({
+      next: input.discount,
+      current: existing.discount,
+      subtotal: itemsTotal.plus(dealLinesTotal),
+      actor: discountActor,
+      capPercent: await loadDiscountCap(prisma),
+    });
   }
 
   // Online orders become CONFIRMED; staff-placed ones (an ORDER_TAKER's, or a released
@@ -1906,6 +1968,7 @@ export async function acceptOrder(orderId: string, acceptedById: string, input: 
         acceptedAt: new Date(),
         ...(input.paymentMethod !== undefined ? { paymentMethod: input.paymentMethod } : {}),
         ...(input.discount !== undefined ? { discount: input.discount } : {}),
+        ...(discountChange.changed ? discountAttribution(discountActor, discountChange.reason) : {}),
         ...(totalAmount !== undefined ? { totalAmount } : {}),
         ...(isOnlinePaid ? { paymentStatus: PaymentStatus.VERIFIED, paymentVerifiedById: acceptedById } : {}),
       },
@@ -1925,11 +1988,12 @@ export async function acceptOrder(orderId: string, acceptedById: string, input: 
       before: { status: existing.status },
       after: { status: nextStatus, paymentMethod: updated.paymentMethod },
     });
-    if (input.discount !== undefined && totalAmount !== undefined && !input.discount.equals(existing.discount)) {
+    if (discountChange.changed && input.discount !== undefined && totalAmount !== undefined) {
       await recordOrderEvent(tx, {
         orderId,
         actorId: acceptedById,
         type: OrderEventType.DISCOUNT_SET,
+        reason: discountChange.reason,
         before: { discount: money(existing.discount), totalAmount: money(existing.totalAmount) },
         after: { discount: money(input.discount), totalAmount: money(totalAmount) },
       });
@@ -2166,8 +2230,11 @@ export interface UpdatePaymentStatusOptions {
   // How much cash was actually handed over. Snapshotted as-is; change due (paidAmount -
   // totalAmount) is computed on demand wherever it's shown, never stored.
   paidAmount?: Prisma.Decimal;
-  // Who did it — recorded on the PAYMENT_MARKED/PAYMENT_UNMARKED and DISCOUNT_SET events.
+  // Who did it — recorded on the PAYMENT_MARKED/PAYMENT_UNMARKED and DISCOUNT_SET events — their
+  // role (for the discount cap) and why the discount changed, if it does.
   actorId?: string;
+  actorRole?: StaffRole;
+  discountReason?: string;
 }
 
 // Quick toggle for the POS cash workflow (pay-after-eating): PENDING <-> VERIFIED, optionally
@@ -2217,6 +2284,21 @@ export async function updatePaymentStatus(
     }
   }
 
+  const discountActor: DiscountActor | undefined =
+    options?.actorId !== undefined
+      ? { actorId: options.actorId, role: options.actorRole ?? StaffRole.POS_ADMIN, reason: options.discountReason ?? null }
+      : undefined;
+  let discountChange: ReturnType<typeof checkDiscountChange> = { changed: false };
+  if (options?.discount !== undefined && discountActor) {
+    discountChange = checkDiscountChange({
+      next: options.discount,
+      current: existing.discount,
+      subtotal: [...existing.items, ...existing.dealLines].reduce((sum, line) => sum.plus(line.subtotal), new Prisma.Decimal(0)),
+      actor: discountActor,
+      capPercent: await loadDiscountCap(prisma),
+    });
+  }
+
   // Reversing to PENDING clears a previously-recorded paid amount — it's no longer accurate
   // once the order is no longer considered paid. The discount itself is left alone; it's
   // business data (a discount given), not a payment-confirmation artifact.
@@ -2229,6 +2311,7 @@ export async function updatePaymentStatus(
       data: {
         paymentStatus,
         ...(options?.discount !== undefined ? { discount: options.discount } : {}),
+        ...(discountChange.changed && discountActor ? discountAttribution(discountActor, discountChange.reason) : {}),
         ...(totalAmount !== undefined ? { totalAmount } : {}),
         ...(paidAmount !== undefined ? { paidAmount } : {}),
       },
@@ -2240,6 +2323,7 @@ export async function updatePaymentStatus(
         orderId: id,
         actorId,
         type: OrderEventType.DISCOUNT_SET,
+        reason: discountChange.changed ? discountChange.reason : null,
         before: { discount: money(existing.discount), totalAmount: money(existing.totalAmount) },
         after: { discount: money(updated.discount), totalAmount: money(updated.totalAmount) },
       });

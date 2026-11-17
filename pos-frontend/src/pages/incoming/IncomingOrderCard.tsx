@@ -9,6 +9,7 @@ import { buildReceiptDoc } from "../../print/buildReceiptDoc";
 import { Button, Input, StatusBadge } from "../../components/ui";
 import { OnlineOrderInfo } from "../../components/OnlineOrderInfo";
 import { useAuth } from "../../context/AuthContext";
+import { DiscountCapHint } from "../../components/DiscountCapHint";
 import { getOrderCustomer, isPickup } from "../../lib/orderCustomer";
 import { cn } from "../../components/ui/cn";
 import { formatMoney } from "../../lib/format";
@@ -38,6 +39,7 @@ export function IncomingOrderCard({ order, kitchens, onGone, onPrintFailure }: I
   const [now, setNow] = useState(() => Date.now());
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(order.paymentMethod);
   const [discount, setDiscount] = useState("");
+  const [discountReason, setDiscountReason] = useState("");
   const [isEditing, setIsEditing] = useState(false);
   const [editQuantities, setEditQuantities] = useState<Map<string, number>>(
     () => new Map(order.items.filter((item) => item.dealOrderLineId === null).map((item) => [item.id, item.quantity])),
@@ -101,6 +103,10 @@ export function IncomingOrderCard({ order, kitchens, onGone, onPrintFailure }: I
       setActionError("Discount must be a non-negative number.");
       return;
     }
+    if (discountNumber !== undefined && discountNumber > 0 && discountReason.trim() === "") {
+      setActionError("Enter a reason for the discount.");
+      return;
+    }
     try {
       const accepted = await handle409(
         acceptMutation.mutateAsync({
@@ -108,6 +114,7 @@ export function IncomingOrderCard({ order, kitchens, onGone, onPrintFailure }: I
           input: {
             paymentMethod,
             ...(discountNumber !== undefined ? { discount: discountNumber } : {}),
+            ...(discountNumber !== undefined && discountNumber > 0 ? { discountReason: discountReason.trim() } : {}),
             ...(isOnlinePaid ? { paymentVerified: true } : {}),
           },
         }),
@@ -340,6 +347,18 @@ export function IncomingOrderCard({ order, kitchens, onGone, onPrintFailure }: I
               <label className="flex flex-col gap-1.5">
                 <span className="text-meta font-medium text-ink-muted">Discount (optional)</span>
                 <Input type="number" min={0} step={0.01} value={discount} onChange={(event) => setDiscount(event.target.value)} />
+                <DiscountCapHint />
+              </label>
+            )}
+            {!isOnlineAdmin && Number(discount) > 0 && (
+              <label className="flex flex-col gap-1.5 sm:col-span-2">
+                <span className="text-meta font-medium text-ink-muted">Discount reason (required)</span>
+                <Input
+                  value={discountReason}
+                  maxLength={200}
+                  onChange={(event) => setDiscountReason(event.target.value)}
+                  placeholder="e.g. regular customer, late order"
+                />
               </label>
             )}
           </div>

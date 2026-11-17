@@ -39,14 +39,17 @@ describe.skipIf(!isLocalDb)("order actions write their audit event (local DB, ro
       const order = await world.order();
       await orderService.updatePaymentStatus(order.id, "VERIFIED", {
         discount: new Prisma.Decimal(50),
+        discountReason: "Regular customer",
         paidAmount: new Prisma.Decimal(600),
         actorId: world.superAdmin.id,
+        actorRole: "SUPER_ADMIN",
       });
       return listOrderEvents(order.id);
     });
     expect(events.map((event) => event.type)).toEqual(["DISCOUNT_SET", "PAYMENT_MARKED"]);
     expect(events[0]).toMatchObject({
       actorName: "Sana Super",
+      reason: "Regular customer",
       before: { discount: "0.00", totalAmount: "600.00" },
       after: { discount: "50.00", totalAmount: "550.00" },
     });

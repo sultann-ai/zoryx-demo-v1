@@ -11,6 +11,7 @@ import { PeriodSelector, loadPeriodChoice, rangeProblem, savePeriodChoice } from
 import type { PeriodChoice } from "./dashboard/PeriodSelector";
 import { SectionHeading, Skeleton } from "./dashboard/parts";
 import { DailyTable, WeeklyTable } from "./dashboard/Tables";
+import { DiscountsTable } from "./dashboard/DiscountsTable";
 import { formatRange } from "./dashboard/format";
 
 // Recharts is the heaviest part of the page, so it loads on its own after the KPI row is up.
@@ -155,6 +156,11 @@ export function DashboardPage() {
               <section className="flex flex-col gap-3">
                 <SectionHeading hint="Click a date to open that business day's orders">Daily breakdown</SectionHeading>
                 <DailyTable analytics={data} />
+              </section>
+
+              <section className="flex flex-col gap-3">
+                <SectionHeading hint="On paid orders in this period, by who gave them">Discounts given</SectionHeading>
+                <DiscountsTable analytics={data} />
               </section>
             </>
           )}

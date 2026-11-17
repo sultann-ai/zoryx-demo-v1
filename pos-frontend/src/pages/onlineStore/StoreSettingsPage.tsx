@@ -10,6 +10,7 @@ import { useSiteSettings, useUpdateSiteSettings } from "../../hooks/useOnlineSto
 import { cleanWhatsappNumber } from "../../lib/whatsapp";
 import { OrderingSwitchCard } from "./OrderingSwitchCard";
 import { OrderTypesCard } from "./OrderTypesCard";
+import { DiscountCapCard } from "./DiscountCapCard";
 
 type TextKey =
   | "shopNameEn" | "shopNameUr" | "taglineEn" | "taglineUr"
@@ -134,6 +135,8 @@ export function StoreSettingsPage() {
       <OrderingSwitchCard />
 
       <OrderTypesCard />
+
+      <DiscountCapCard />
 
       {isLoading && <p className="text-body text-ink-muted">Loading settings…</p>}
       {isError && <p className="text-body text-status-danger-text">Could not load the settings.</p>}

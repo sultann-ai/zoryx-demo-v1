@@ -54,6 +54,7 @@ import { ORDER_SOURCE_LABEL, orderTypeLabel, PAYMENT_METHOD_LABEL } from "../lib
 import { LINE_NOTE_MAX_LENGTH, normalizeLineNote } from "../lib/lineNotes";
 import { AddItemPicker } from "./orderDetail/AddItemPicker";
 import { CancelOrderModal } from "./orderDetail/CancelOrderModal";
+import { DiscountCapHint } from "../components/DiscountCapHint";
 import { EditableLineNote } from "./orderDetail/EditableLineNote";
 import { OrderHistory } from "./orderDetail/OrderHistory";
 
@@ -139,6 +140,7 @@ export function OrderDetailPage() {
   const [addItemError, setAddItemError] = useState<string | null>(null);
   const [removeItemError, setRemoveItemError] = useState<string | null>(null);
   const [confirmDiscount, setConfirmDiscount] = useState("0");
+  const [confirmDiscountReason, setConfirmDiscountReason] = useState("");
   const [confirmPaidAmount, setConfirmPaidAmount] = useState("");
   const [confirmPaymentError, setConfirmPaymentError] = useState<string | null>(null);
   const [printFeedback, setPrintFeedback] = useState<PrintFeedback | null>(null);
@@ -245,6 +247,9 @@ export function OrderDetailPage() {
   // field, so the preview updates live without an extra round-trip to the server.
   const preDiscountTotal = Number(order.totalAmount) + Number(order.discount);
   const confirmDiscountNumber = Number(confirmDiscount) || 0;
+  // A reason is needed only when the discount is being changed to something above 0.
+  const isDiscountChanging = confirmDiscountNumber !== Number(order.discount);
+  const needsDiscountReason = isDiscountChanging && confirmDiscountNumber > 0;
   const newTotal = Math.max(preDiscountTotal - confirmDiscountNumber, 0);
   const confirmPaidNumber = confirmPaidAmount.trim() === "" ? null : Number(confirmPaidAmount);
   const changeDue = confirmPaidNumber !== null && !Number.isNaN(confirmPaidNumber) ? confirmPaidNumber - newTotal : null;
@@ -349,12 +354,17 @@ export function OrderDetailPage() {
       setConfirmPaymentError("Enter how much was paid.");
       return;
     }
+    if (needsDiscountReason && confirmDiscountReason.trim() === "") {
+      setConfirmPaymentError("Enter a reason for the discount.");
+      return;
+    }
 
     try {
       await paymentStatusMutation.mutateAsync({
         id: orderId,
         paymentStatus: "VERIFIED",
         discount: discountNumber,
+        ...(needsDiscountReason ? { discountReason: confirmDiscountReason.trim() } : {}),
         paidAmount: paidNumber,
       });
     } catch (error) {
@@ -630,7 +640,15 @@ export function OrderDetailPage() {
             value={order.riderId ? (employeeNameById.get(order.riderId) ?? "—") : "Unassigned"}
           />
           <DetailField label="Placed at" value={new Date(order.createdAt).toLocaleString()} />
-          <DetailField label="Discount" value={Number(order.discount).toFixed(2)} />
+          <DetailField
+            label="Discount"
+            value={
+              <>
+                {Number(order.discount).toFixed(2)}
+                {order.discountReason && <span className="block text-meta text-ink-muted">{order.discountReason}</span>}
+              </>
+            }
+          />
           <DetailField label="Total" value={<span className="text-numeric">{Number(order.totalAmount).toFixed(2)}</span>} />
           {order.paidAmount !== null && (
             <>
@@ -682,6 +700,7 @@ export function OrderDetailPage() {
                     value={confirmDiscount}
                     onChange={(event) => setConfirmDiscount(event.target.value)}
                   />
+                  <DiscountCapHint />
                 </div>
                 <div className="flex flex-col gap-1.5">
                   <label htmlFor="confirm-paid" className="text-meta font-medium text-ink-muted">
@@ -698,6 +717,20 @@ export function OrderDetailPage() {
                   />
                 </div>
               </div>
+              {needsDiscountReason && (
+                <div className="flex flex-col gap-1.5">
+                  <label htmlFor="confirm-discount-reason" className="text-meta font-medium text-ink-muted">
+                    Discount reason (required)
+                  </label>
+                  <Input
+                    id="confirm-discount-reason"
+                    value={confirmDiscountReason}
+                    maxLength={200}
+                    onChange={(event) => setConfirmDiscountReason(event.target.value)}
+                    placeholder="e.g. regular customer, late order"
+                  />
+                </div>
+              )}
               <div className="flex flex-wrap gap-6 text-body text-ink">
                 <span>
                   Total after discount: <span className="text-numeric font-medium">{newTotal.toFixed(2)}</span>

@@ -174,6 +174,7 @@ model StaffUser {
   mediaUploaded         MediaAsset[]
   orderEvents           OrderEvent[]           @relation("OrderEventActor")
   ordersCancelled       Order[]                @relation("CancelledBy")
+  ordersDiscounted      Order[]                @relation("DiscountBy")
 
   @@index([role])
 }
@@ -529,6 +530,12 @@ model Order {
   releasedAt           DateTime?
   totalAmount          Decimal          @db.Decimal(10, 2)
   discount             Decimal          @default(0) @db.Decimal(10, 2)
+  // Who last set the discount, when, and why (required whenever it's above 0) — set on every
+  // change, including back to 0. Null on orders whose discount predates these columns.
+  discountById         String?
+  discountBy           StaffUser?       @relation("DiscountBy", fields: [discountById], references: [id], onDelete: SetNull)
+  discountAt           DateTime?
+  discountReason       String?
   // How much cash was actually handed over, recorded when a CASH order's payment is
   // confirmed (see order.service.ts's updatePaymentStatus). Null until then — change due is
   // paidAmount - totalAmount, computed on demand, never stored.
@@ -794,32 +801,35 @@ model MediaBlob {
 
 // Single row, id always 1 (also enforced by a CHECK constraint in the migration).
 model SiteSettings {
-  id                    Int      @id @default(1)
-  shopNameEn            String
-  shopNameUr            String
-  taglineEn             String
-  taglineUr             String
-  phone                 String
+  id                         Int      @id @default(1)
+  shopNameEn                 String
+  shopNameUr                 String
+  taglineEn                  String
+  taglineUr                  String
+  phone                      String
   // Digits only, international format without "+", e.g. 923001234567.
-  whatsappNumber        String
-  addressEn             String
-  addressUr             String
-  mapUrl                String
-  openingHoursEn        String
-  openingHoursUr        String
-  announcementEn        String?
-  announcementUr        String?
-  onlineOrderingEnabled Boolean  @default(true)
+  whatsappNumber             String
+  addressEn                  String
+  addressUr                  String
+  mapUrl                     String
+  openingHoursEn             String
+  openingHoursUr             String
+  announcementEn             String?
+  announcementUr             String?
+  onlineOrderingEnabled      Boolean  @default(true)
   // Which ways to order are offered online (at least one stays on). Pickup is a TAKEAWAY order.
-  deliveryEnabled       Boolean  @default(true)
-  pickupEnabled         Boolean  @default(true)
-  pickupMinOrderAmount  Decimal  @default(0) @db.Decimal(10, 2)
-  pickupNoteEn          String?
-  pickupNoteUr          String?
-  facebookUrl           String?
-  instagramUrl          String?
-  tiktokUrl             String?
-  updatedAt             DateTime @updatedAt
+  deliveryEnabled            Boolean  @default(true)
+  pickupEnabled              Boolean  @default(true)
+  pickupMinOrderAmount       Decimal  @default(0) @db.Decimal(10, 2)
+  pickupNoteEn               String?
+  pickupNoteUr               String?
+  // The largest discount anyone but a SUPER_ADMIN may give, as a percent of the order's items +
+  // deals (before delivery fee). Only a SUPER_ADMIN may change it. Never on the public website.
+  maxDiscountPercentPosAdmin Decimal  @default(20) @db.Decimal(5, 2)
+  facebookUrl                String?
+  instagramUrl               String?
+  tiktokUrl                  String?
+  updatedAt                  DateTime @updatedAt
 }
 
 model DeliveryArea {

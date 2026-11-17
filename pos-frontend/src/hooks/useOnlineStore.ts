@@ -23,8 +23,8 @@ const STATE_KEY = ["online-store", "state"] as const;
 
 // ---------- Store settings ----------
 
-export function useSiteSettings() {
-  return useQuery({ queryKey: SETTINGS_KEY, queryFn: siteSettingsApi.get });
+export function useSiteSettings(options?: { enabled?: boolean }) {
+  return useQuery({ queryKey: SETTINGS_KEY, queryFn: siteSettingsApi.get, enabled: options?.enabled !== false });
 }
 
 export function useUpdateSiteSettings() {

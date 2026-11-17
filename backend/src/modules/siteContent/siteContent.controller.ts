@@ -1,4 +1,5 @@
 import { Request, Response } from "express";
+import { StaffRole } from "../../../generated/prisma/client";
 import { mediaUrls } from "../media/media.service";
 import { makeCrudHandlers } from "./siteContent.crud";
 import * as service from "./siteContent.service";
@@ -23,6 +24,11 @@ export async function updateSiteSettings(req: Request, res: Response) {
   }
   if (Object.keys(parsed.value).length === 0) {
     res.status(400).json({ error: "No fields to update" });
+    return;
+  }
+  // The discount cap limits what POS Admins may give, so only a Super Admin may move it.
+  if ("maxDiscountPercentPosAdmin" in parsed.value && req.staff?.role !== StaffRole.SUPER_ADMIN) {
+    res.status(403).json({ error: "Only a Super Admin can change the discount cap" });
     return;
   }
   try {

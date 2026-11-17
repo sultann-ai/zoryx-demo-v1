@@ -79,13 +79,19 @@ export function useUpdateOrderPaymentStatus() {
       id,
       paymentStatus,
       discount,
+      discountReason,
       paidAmount,
     }: {
       id: string;
       paymentStatus: "PENDING" | "VERIFIED";
       discount?: number;
+      discountReason?: string;
       paidAmount?: number;
-    }) => ordersApi.updatePaymentStatus(id, paymentStatus, { discount, paidAmount }),
+    }) => ordersApi.updatePaymentStatus(id, paymentStatus, {
+        ...(discount !== undefined ? { discount } : {}),
+        ...(discountReason !== undefined ? { discountReason } : {}),
+        ...(paidAmount !== undefined ? { paidAmount } : {}),
+      }),
     onSuccess: (order) => {
       queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
       queryClient.setQueryData(["orders", "detail", order.id], order);

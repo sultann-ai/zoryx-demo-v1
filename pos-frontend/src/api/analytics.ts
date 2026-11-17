@@ -107,6 +107,12 @@ export interface Analytics {
   topItemsByRevenue: AnalyticsItem[];
   topItemsByQuantity: AnalyticsItem[];
   cancelledReasons: { reason: string; count: number; value: string }[];
+  // Discounts on the period's sales, per staff member who gave them (staffId null: not recorded).
+  discounts: {
+    total: string;
+    count: number;
+    byStaff: { staffId: string | null; name: string; count: number; amount: string }[];
+  };
   weekly: AnalyticsWeek[];
   weekday: { from: string; to: string; rows: { weekday: number; averageSales: string; businessDays: number }[] };
 }

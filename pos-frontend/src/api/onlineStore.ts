@@ -32,6 +32,8 @@ export interface SiteSettings {
   facebookUrl: string | null;
   instagramUrl: string | null;
   tiktokUrl: string | null;
+  // The largest discount a POS Admin may give, % of an order's items ("20.00"). SUPER_ADMIN-only to change.
+  maxDiscountPercentPosAdmin: string;
   updatedAt: string;
 }
 

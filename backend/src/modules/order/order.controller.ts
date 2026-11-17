@@ -18,6 +18,7 @@ import { normalizePublicCode } from "../guestOrder/publicIds";
 import * as mediaService from "../media/media.service";
 import * as orderService from "./order.service";
 import * as orderEvents from "./orderEvents";
+import * as discountPolicy from "./discountPolicy";
 
 const VALID_ORDER_TYPES = Object.values(OrderType);
 const VALID_PAYMENT_METHODS = Object.values(PaymentMethod);
@@ -27,6 +28,20 @@ const VALID_ITEM_STATUSES = Object.values(OrderItemStatus);
 // Only the two states this quick toggle is meant for — AWAITING_VERIFICATION/REJECTED
 // belong to the separate online-payment-screenshot flow, not this one.
 const VALID_QUICK_PAYMENT_STATUSES = [PaymentStatus.PENDING, PaymentStatus.VERIFIED] as const;
+
+// The discount rules' refusals (discountPolicy.ts), shared by every route that sets a discount: the
+// cap is a permission problem (403, "Discount above X% needs a Super Admin"), the rest are 400s.
+function respondToDiscountError(error: unknown, res: Response): boolean {
+  if (error instanceof discountPolicy.DiscountAboveCapError) {
+    res.status(403).json({ error: error.message });
+    return true;
+  }
+  if (error instanceof discountPolicy.DiscountReasonRequiredError || error instanceof discountPolicy.DiscountReasonTooLongError) {
+    res.status(400).json({ error: error.message });
+    return true;
+  }
+  return false;
+}
 
 function isOneOf<T extends string>(value: unknown, options: readonly T[]): value is T {
   return typeof value === "string" && (options as readonly string[]).includes(value);
@@ -59,6 +74,7 @@ export async function createOrder(req: Request, res: Response) {
     customerAddressId,
     deliveryAddress,
     discount,
+    discountReason,
     notes,
     items,
     deals,
@@ -131,6 +147,10 @@ export async function createOrder(req: Request, res: Response) {
       return;
     }
   }
+  if (discountReason !== undefined && typeof discountReason !== "string") {
+    res.status(400).json({ error: "discountReason must be a string" });
+    return;
+  }
 
   // "Schedule for later" — absent means place it now, exactly as before.
   let scheduledForDate: Date | undefined;
@@ -184,7 +204,9 @@ export async function createOrder(req: Request, res: Response) {
       ...(customerId !== undefined ? { customerId } : {}),
       ...(customerAddressId !== undefined ? { customerAddressId } : {}),
       ...(deliveryAddress !== undefined ? { deliveryAddress } : {}),
-      ...(discountDecimal !== undefined ? { discount: discountDecimal } : {}),
+      ...(discountDecimal !== undefined
+        ? { discount: discountDecimal, discountBy: { actorId: req.staff.id, role: req.staff.role, reason: discountReason ?? null } }
+        : {}),
       ...(notes !== undefined ? { notes } : {}),
       ...(scheduledForDate !== undefined ? { scheduledFor: scheduledForDate } : {}),
       items: parsedItems,
@@ -194,6 +216,13 @@ export async function createOrder(req: Request, res: Response) {
   } catch (error) {
     if (error instanceof orderService.NoActiveBusinessDayError) {
       res.status(400).json({ error: "No active business day. Start one before creating orders." });
+      return;
+    }
+    if (respondToDiscountError(error, res)) {
+      return;
+    }
+    if (error instanceof orderService.DiscountExceedsTotalError) {
+      res.status(400).json({ error: "discount cannot exceed the order's total" });
       return;
     }
     if (error instanceof orderService.EmptyOrderError) {
@@ -738,10 +767,14 @@ export async function updateSubmission(req: Request, res: Response) {
     }
   }
 
-  const { items, deals, notes, paymentMethod, discount } = req.body ?? {};
+  const { items, deals, notes, paymentMethod, discount, discountReason } = req.body ?? {};
 
   if (notes !== undefined && typeof notes !== "string") {
     res.status(400).json({ error: "notes must be a string" });
+    return;
+  }
+  if (discountReason !== undefined && typeof discountReason !== "string") {
+    res.status(400).json({ error: "discountReason must be a string" });
     return;
   }
   if (!isReception && (paymentMethod !== undefined || discount !== undefined)) {
@@ -817,7 +850,9 @@ export async function updateSubmission(req: Request, res: Response) {
       ...(notes !== undefined ? { notes } : {}),
       ...(paymentMethod !== undefined ? { paymentMethod } : {}),
       ...(discountDecimal !== undefined ? { discount: discountDecimal } : {}),
+      ...(discountReason !== undefined ? { discountReason } : {}),
       actorId: req.staff.id,
+      actorRole: req.staff.role,
     });
     res.json(order);
   } catch (error) {
@@ -827,6 +862,9 @@ export async function updateSubmission(req: Request, res: Response) {
     }
     if (error instanceof orderService.OrderNotAwaitingReceptionError) {
       res.status(409).json({ error: "This order has already been reviewed and can no longer be edited this way" });
+      return;
+    }
+    if (respondToDiscountError(error, res)) {
       return;
     }
     if (error instanceof orderService.EmptyOrderError) {
@@ -887,9 +925,12 @@ export async function acceptOrder(req: Request, res: Response) {
   }
 
   try {
-    const order = await orderService.acceptOrder(req.params.id as string, req.staff.id, acceptInput);
+    const order = await orderService.acceptOrder(req.params.id as string, req.staff.id, acceptInput, req.staff.role);
     res.json(order);
   } catch (error) {
+    if (respondToDiscountError(error, res)) {
+      return;
+    }
     if (error instanceof orderService.OrderNotFoundError) {
       res.status(404).json({ error: "Order not found" });
       return;
@@ -1043,7 +1084,11 @@ export async function updatePaymentStatus(req: Request, res: Response) {
     return;
   }
 
-  const { paymentStatus, discount, paidAmount } = req.body ?? {};
+  const { paymentStatus, discount, discountReason, paidAmount } = req.body ?? {};
+  if (discountReason !== undefined && typeof discountReason !== "string") {
+    res.status(400).json({ error: "discountReason must be a string" });
+    return;
+  }
 
   if (!isOneOf(paymentStatus, VALID_QUICK_PAYMENT_STATUSES)) {
     res.status(400).json({ error: `paymentStatus must be one of: ${VALID_QUICK_PAYMENT_STATUSES.join(", ")}` });
@@ -1072,7 +1117,9 @@ export async function updatePaymentStatus(req: Request, res: Response) {
     const order = await orderService.updatePaymentStatus(req.params.id as string, paymentStatus, {
       ...(discountDecimal !== undefined ? { discount: discountDecimal } : {}),
       ...(paidAmountDecimal !== undefined ? { paidAmount: paidAmountDecimal } : {}),
+      ...(discountReason !== undefined ? { discountReason } : {}),
       actorId: req.staff.id,
+      actorRole: req.staff.role,
     });
     res.json(order);
   } catch (error) {
@@ -1082,6 +1129,9 @@ export async function updatePaymentStatus(req: Request, res: Response) {
     }
     if (error instanceof orderService.NotCashPaymentError) {
       res.status(400).json({ error: "Only CASH orders can use this quick payment toggle" });
+      return;
+    }
+    if (respondToDiscountError(error, res)) {
       return;
     }
     if (error instanceof orderService.DiscountExceedsTotalError) {
