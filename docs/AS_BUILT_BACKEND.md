@@ -1117,6 +1117,19 @@ enum OrderChangeStatus {
   REJECTED
 }
 
+// What an OrderEvent records. Every money- or trust-relevant action on an order writes one, in
+// the same transaction as the change itself (see order/orderEvents.ts).
+enum OrderEventType {
+  CANCELLED
+  DISCOUNT_SET
+  PAYMENT_MARKED
+  PAYMENT_UNMARKED
+  ITEM_REMOVED
+  ITEM_ADDED
+  ACCEPTED
+  REJECTED
+}
+
 enum PaymentMethod {
   CASH
   ONLINE
@@ -1138,6 +1151,9 @@ enum InventoryTxnType {
   STOCK_IN
   STOCK_OUT
   ADJUSTMENT
+  // Stock given back when an order that had deducted it is cancelled (order.service.ts's
+  // cancelOrder). Written once per order, never by the manual adjust endpoint.
+  RESTOCK_CANCEL
 }
 
 enum AttendanceStatus {
@@ -1157,6 +1173,7 @@ enum MediaKind {
   DEAL
   GALLERY
   PAYMENT_QR
+  CATEGORY
   // Reserved for the ordering module (customer payment screenshots). Staff cannot upload it
   // and the public media route never serves it.
   PAYMENT_PROOF
@@ -1188,6 +1205,9 @@ model StaffUser {
   orderChangesRequested OrderChange[]          @relation("OrderChangesRequested")
   orderChangesReviewed  OrderChange[]          @relation("OrderChangesReviewed")
   mediaUploaded         MediaAsset[]
+  orderEvents           OrderEvent[]           @relation("OrderEventActor")
+  ordersCancelled       Order[]                @relation("CancelledBy")
+  ordersDiscounted      Order[]                @relation("DiscountBy")
 
   @@index([role])
 }
@@ -1206,11 +1226,14 @@ model Kitchen {
 // ================= MENU =================
 
 model Category {
-  id        String  @id @default(uuid())
-  name      String  @unique
+  id        String      @id @default(uuid())
+  name      String      @unique
   // Urdu display name and display order for the customer website.
   nameUr    String?
-  sortOrder Int     @default(0)
+  sortOrder Int         @default(0)
+  // Optional photo for the customer website; when missing the website uses the first item's photo.
+  imageId   String?
+  image     MediaAsset? @relation("CategoryImage", fields: [imageId], references: [id], onDelete: SetNull)
 
   menuItems       MenuItem[]
   dealChoiceSlots DealComponent[]
@@ -1315,6 +1338,8 @@ model Deal {
   image             MediaAsset? @relation("DealImage", fields: [imageId], references: [id], onDelete: SetNull)
   nameUr            String?
   descriptionUr     String?
+  // "Popular" star on the customer website.
+  isFeatured        Boolean     @default(false)
   isActive          Boolean     @default(true)
   isAvailableInPOS  Boolean     @default(true)
   isAvailableOnline Boolean     @default(true)
@@ -1538,12 +1563,25 @@ model Order {
   releasedAt           DateTime?
   totalAmount          Decimal          @db.Decimal(10, 2)
   discount             Decimal          @default(0) @db.Decimal(10, 2)
+  // Who last set the discount, when, and why (required whenever it's above 0) — set on every
+  // change, including back to 0. Null on orders whose discount predates these columns.
+  discountById         String?
+  discountBy           StaffUser?       @relation("DiscountBy", fields: [discountById], references: [id], onDelete: SetNull)
+  discountAt           DateTime?
+  discountReason       String?
   // How much cash was actually handed over, recorded when a CASH order's payment is
   // confirmed (see order.service.ts's updatePaymentStatus). Null until then — change due is
   // paidAmount - totalAmount, computed on demand, never stored.
   paidAmount           Decimal?         @db.Decimal(10, 2)
   notes                String?
+  // Why it was cancelled (the "cancel reason"), plus who and when — set by every cancel path.
+  // cancelledAt/cancelledById are null for orders cancelled before they existed.
   cancelledReason      String?
+  cancelledAt          DateTime?
+  cancelledById        String?
+  cancelledBy          StaffUser?       @relation("CancelledBy", fields: [cancelledById], references: [id], onDelete: SetNull)
+  // Set when staff mark an accepted pickup order "Not collected" (the order is cancelled; this counts as a strike for the phone).
+  notCollectedAt       DateTime?
   createdAt            DateTime         @default(now())
   updatedAt            DateTime         @updatedAt
 
@@ -1551,6 +1589,7 @@ model Order {
   dealLines OrderDealLine[]
   changes   OrderChange[]
   clientIp  OrderClientIp?
+  events    OrderEvent[]
 
   @@unique([businessDayId, orderNumber])
   @@index([status])
@@ -1559,6 +1598,8 @@ model Order {
   @@index([status, scheduledFor])
   // Per-phone limits for guest orders.
   @@index([customerPhone, createdAt])
+  // Repeat no-shows: pickup orders staff marked "Not collected", counted per phone.
+  @@index([customerPhone, notCollectedAt])
 }
 
 model OrderChange {
@@ -1580,6 +1621,26 @@ model OrderChange {
 
   @@index([orderId, createdAt])
   @@index([status, createdAt])
+}
+
+// The order's audit trail: who did what, when, and why. Append-only — nothing updates or deletes
+// these rows. actorId is null for something no staff member did (a system job, a guest).
+// before/after hold the fields the action changed (money as strings, like the API).
+model OrderEvent {
+  id        String         @id @default(uuid())
+  orderId   String
+  order     Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  actorId   String?
+  actor     StaffUser?     @relation("OrderEventActor", fields: [actorId], references: [id], onDelete: SetNull)
+  type      OrderEventType
+  // At most ORDER_EVENT_REASON_MAX_LENGTH (200) characters.
+  reason    String?        @db.VarChar(200)
+  before    Json?
+  after     Json?
+  createdAt DateTime       @default(now())
+
+  @@index([orderId])
+  @@index([type, createdAt])
 }
 
 model OrderItem {
@@ -1738,19 +1799,22 @@ model InventoryTransaction {
 // Metadata only. The bytes live in MediaBlob so that listing/joining assets never drags image
 // data along — only the public serving route reads MediaBlob.
 model MediaAsset {
-  id          String     @id @default(uuid())
-  kind        MediaKind
-  mimeType    String
-  width       Int
-  height      Int
-  sizeBytes   Int
-  createdAt   DateTime   @default(now())
-  createdById String?
-  createdBy   StaffUser? @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  id              String     @id @default(uuid())
+  kind            MediaKind
+  mimeType        String
+  width           Int
+  height          Int
+  sizeBytes       Int
+  // True for a cut-out photo that kept its transparent pixels (stored as WebP with alpha).
+  hasTransparency Boolean    @default(false)
+  createdAt       DateTime   @default(now())
+  createdById     String?
+  createdBy       StaffUser? @relation(fields: [createdById], references: [id], onDelete: SetNull)
 
   blob               MediaBlob?
   menuItems          MenuItem[]       @relation("MenuItemImage")
   deals              Deal[]           @relation("DealImage")
+  categories         Category[]       @relation("CategoryImage")
   galleryImages      GalleryImage[]
   paymentAccounts    PaymentAccount[]
   paymentProofOrders Order[]          @relation("OrderPaymentProof")
@@ -1770,26 +1834,35 @@ model MediaBlob {
 
 // Single row, id always 1 (also enforced by a CHECK constraint in the migration).
 model SiteSettings {
-  id                    Int      @id @default(1)
-  shopNameEn            String
-  shopNameUr            String
-  taglineEn             String
-  taglineUr             String
-  phone                 String
+  id                         Int      @id @default(1)
+  shopNameEn                 String
+  shopNameUr                 String
+  taglineEn                  String
+  taglineUr                  String
+  phone                      String
   // Digits only, international format without "+", e.g. 923001234567.
-  whatsappNumber        String
-  addressEn             String
-  addressUr             String
-  mapUrl                String
-  openingHoursEn        String
-  openingHoursUr        String
-  announcementEn        String?
-  announcementUr        String?
-  onlineOrderingEnabled Boolean  @default(true)
-  facebookUrl           String?
-  instagramUrl          String?
-  tiktokUrl             String?
-  updatedAt             DateTime @updatedAt
+  whatsappNumber             String
+  addressEn                  String
+  addressUr                  String
+  mapUrl                     String
+  openingHoursEn             String
+  openingHoursUr             String
+  announcementEn             String?
+  announcementUr             String?
+  onlineOrderingEnabled      Boolean  @default(true)
+  // Which ways to order are offered online (at least one stays on). Pickup is a TAKEAWAY order.
+  deliveryEnabled            Boolean  @default(true)
+  pickupEnabled              Boolean  @default(true)
+  pickupMinOrderAmount       Decimal  @default(0) @db.Decimal(10, 2)
+  pickupNoteEn               String?
+  pickupNoteUr               String?
+  // The largest discount anyone but a SUPER_ADMIN may give, as a percent of the order's items +
+  // deals (before delivery fee). Only a SUPER_ADMIN may change it. Never on the public website.
+  maxDiscountPercentPosAdmin Decimal  @default(20) @db.Decimal(5, 2)
+  facebookUrl                String?
+  instagramUrl               String?
+  tiktokUrl                  String?
+  updatedAt                  DateTime @updatedAt
 }
 
 model DeliveryArea {

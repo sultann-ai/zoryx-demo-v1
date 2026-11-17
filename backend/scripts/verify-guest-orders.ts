@@ -255,7 +255,7 @@ async function main() {
     check("status: unknown and malformed ids are the same 404", (await api("GET", `/api/online/orders/${"x".repeat(22)}`)).status === 404 && (await api("GET", "/api/online/orders/short")).status === 404);
 
     // ============================ 4. accept -> kitchen, fee survives a discount ============================
-    const accept = await api("POST", `/api/pos/orders/${row1.id}/accept`, { token: admin.token, body: { discount: 50 } });
+    const accept = await api("POST", `/api/pos/orders/${row1.id}/accept`, { token: admin.token, body: { discount: 50, discountReason: "verify script" } });
     const accepted = await json(accept);
     check("accept: 200, CONFIRMED", accept.status === 200 && accepted.status === "CONFIRMED", accepted.status);
     check("accept with a discount keeps the delivery fee: 1900 − 50 + 150 = 2000", accepted.totalAmount === "2000" && accepted.deliveryFee === "150", { t: accepted.totalAmount, f: accepted.deliveryFee });

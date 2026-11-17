@@ -1,0 +1,36 @@
+- **Baseline:** `747f60e` baseline commit; `3005a33` fixed the 18 failing role tests (stubs now return an active staff row). End state: 340/340 backend tests pass; backend build, pos-frontend build + lint (0 errors, 23 warnings, all pre-existing) and online-frontend build OK.
+- **Fix 1, audit trail** (`f69ef64`): new table `OrderEvent` + enum `OrderEventType`, migration `20261117090000_order_events`.
+  - Written in the same transaction by every cancel / reject / accept / discount / payment mark-unmark / item add-remove path (`order.service.ts`, `payment.service.ts`, new `orderEvents.ts`).
+  - New `GET /api/pos/orders/:id/events` (SA, PA). UI: History card on OrderDetailPage (`orderDetail/OrderHistory.tsx`).
+- **Fix 2, guarded cancel** (`732134c`): migration `20261117100000_order_cancel_audit`: `Order.cancelledAt`, `Order.cancelledById`, `InventoryTxnType.RESTOCK_CANCEL`.
+  - `cancelOrder`: reason 1-200; only PENDING/CONFIRMED/AWAITING_RECEPTION, else 409 `NOT_CANCELLABLE` ("Completed orders can't be cancelled"); a paid order only by SA/PA (403).
+  - Restock from the order's own stock ledger (net STOCK_OUT − STOCK_IN), skipped if a RESTOCK_CANCEL already exists. Gated orders never accepted have no ledger rows, so nothing is restocked.
+  - Sockets `order:cancelled` and `order-item:removed` `{orderId, orderNumber, itemIds}` go to each kitchen room and pos-admin; the KDS drops those cards. Item removal writes ITEM_REMOVED. UI: `CancelOrderModal.tsx` (required reason, paid warning).
+- **Fix 3, sales = paid** (`c333897`): no migration. `salesDefinitions.ts` holds the single definition (SQL, JS and Prisma forms).
+  - Switched over from status-only filters: the daily Excel summary (`orderReports.ts`) and the dashboard top items (`reports.service.ts`). Everything else already used `SQL_COUNTED`.
+  - Added Unpaid (count + amount) to `/reports/dashboard`, analytics totals, the daily export and a dashboard card. Added Cancelled after payment to the dashboard and analytics.
+  - Ending the day without `force` → 400 `UNPAID_ORDERS` listing each unpaid order (number + amount); the POS shows them before "End anyway".
+- **Fix 4, discounts** (`d126525`): migration `20261117110000_discount_cap_and_attribution`: `Order.discountById/discountAt/discountReason`, `SiteSettings.maxDiscountPercentPosAdmin` (default 20).
+  - `discountPolicy.ts` runs in createOrder, updateSubmission, acceptOrder and updatePaymentStatus: a changed discount above 0 needs a reason (1-200); non-SA capped → 403 "Discount above 20% needs a Super Admin".
+  - Every change (including back to 0) stores who/when/why and writes DISCOUNT_SET with before/after amounts. Cap in GET/PUT `/site-settings` (SA-only change, never on the public store).
+  - UI: reason inputs + "Max 20%" hint (Incoming accept, Confirm Payment), Store settings "Discount limit" card, dashboard "Discounts given" by staff (analytics `discounts`).
+- **Fix 5, PK time** (`c89d3a9`): no migration. Payroll "this month" uses `karachiYearMonth` (was UTC); the business-day default label is the PK date.
+  - Report months already bucketed by the Karachi opening date; now tested at 23:30 / 00:30 PK, along with payroll and attendance. Attendance grid + Reports page default to PK dates (`shopToday`).
+- **Fix 6, live access** (`445dd33`): no migration. `common/staffSession.ts` check (exists, active, same role + kitchen as the token) is used by the socket handshake and `requireAuth`; refusals carry `data.code: "AUTH"`.
+  - Deactivate, delete, role/kitchen change or password reset → `disconnectStaffSockets` (`auth:revoked`, then disconnect). The POS logs out on a socket auth error exactly like a 401.
+- **Sales definition used:** `Order.status NOT IN (CANCELLED, AWAITING_RECEPTION, SCHEDULED) AND Order.paymentStatus = 'VERIFIED'`, summed on `Order.totalAmount` (items + deals + delivery fee − discount).
+  - Cash = Confirm Payment set VERIFIED; online = payment verified. Unpaid = same statuses, `paymentStatus <> 'VERIFIED'` (COMPLETED included). A day = business day by its Karachi opening date.
+- **Unpaid-history script** (`npx ts-node scripts/report-unpaid-history.ts`, read-only), run on the local dev DB only (two test days):
+  - `2026-11-16`: old 1 order / 150.00 → new 0 / 0.00, unpaid 1 / 150.00; `2026-11-16` (second day): old 2 / 350.00 → new 0 / 0.00, unpaid 2 / 350.00.
+  - Total: 3 unpaid orders, Rs 500.00; sales Rs 500.00 → Rs 0.00. **Run it against production before deploying** to see the real impact.
+- **Decisions to check:**
+  - Reused the existing `Order.cancelledReason` as "cancelReason" instead of adding a second column.
+  - Approved CANCEL change requests now use the same guarded cancel (restock + kitchen notice; before they did neither). "Not collected" still doesn't restock (the food was made).
+  - Discount cap base = items + deals, before the delivery fee. Only a *change* is checked: re-sending the current discount needs no reason. `createOrder` now also refuses a discount above the total (it didn't).
+  - If staff don't Confirm Payment on every cash order (e.g. delivered COD), those orders leave sales and End Day will stop on them every night.
+  - `requireAuth` also returns 401 on a role/kitchen mismatch (HTTP, not only sockets), so a demoted admin is logged out at once.
+- **Not done:**
+  - A password reset ends sockets but not existing HTTP tokens (would need a token-version column).
+  - VendorDetailPage still defaults to the UTC date. `rejectPayment` (old payment queue) and approved EDIT requests write no event (no matching type).
+  - UI changes are typechecked and linted only: there is no frontend test runner and nothing was click-tested.
+  - Migrations were applied to the local DB only; production gets them from `npm start` (`prisma migrate deploy`). HawkScan was not run (no runtime/API key).
