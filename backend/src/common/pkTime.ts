@@ -91,3 +91,11 @@ export function toKarachiDateParam(value: unknown): string | undefined {
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? undefined : karachiDate(parsed);
 }
+
+// The Karachi calendar year and month (1-12) an instant falls in: a month runs from 00:00 Pakistan
+// time on the 1st to 00:00 Pakistan time on the next 1st.
+export function karachiYearMonth(instant: Date): { year: number; month: number } {
+  const date = karachiDate(instant);
+  return { year: Number(date.slice(0, 4)), month: Number(date.slice(5, 7)) };
+}
+

@@ -46,6 +46,12 @@ export function fromWallTime(wall: WallTime, timeZone: string = shop.timeZone): 
   return instant;
 }
 
+// Today's date in the shop's zone, "YYYY-MM-DD" — not the UTC date, which is still yesterday until
+// 5 AM in Pakistan.
+export function shopToday(now: Date = new Date()): string {
+  return toWallTime(now).date;
+}
+
 // "YYYY-MM-DD" `days` after `date` (calendar arithmetic, zone-independent).
 export function addDays(date: string, days: number): string {
   const [year, month, day] = date.split("-").map(Number);

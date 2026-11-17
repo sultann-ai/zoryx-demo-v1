@@ -1,4 +1,5 @@
 import { Request, Response } from "express";
+import { karachiDate } from "../../common/pkTime";
 import * as businessDayService from "./businessDay.service";
 import * as orderService from "../order/order.service";
 
@@ -26,7 +27,8 @@ export async function start(req: Request, res: Response) {
     return;
   }
 
-  const resolvedLabel = typeof label === "string" ? label.trim() : new Date().toISOString().slice(0, 10);
+  // Default label: today's Pakistan date (a day started at 00:30 PK is that date, not yesterday's UTC one).
+  const resolvedLabel = typeof label === "string" ? label.trim() : karachiDate(new Date());
 
   const businessDay = await businessDayService.startBusinessDay(req.staff.id, resolvedLabel);
   res.status(201).json(businessDay);

@@ -1,5 +1,6 @@
 import { Prisma } from "../../../generated/prisma/client";
 import { prisma } from "../../config/prisma";
+import { karachiYearMonth } from "../../common/pkTime";
 import { requireEmployee } from "./employee.service";
 
 const ZERO = new Prisma.Decimal(0);
@@ -56,10 +57,10 @@ export async function upsertPayrollEntry(input: UpsertPayrollEntryInput) {
   });
 }
 
-export async function getCurrentMonthPayroll() {
-  const now = new Date();
-  const month = now.getUTCMonth() + 1;
-  const year = now.getUTCFullYear();
+// "This month" is the Pakistan calendar month (karachiYearMonth) — never the UTC month, which would
+// still say last month until 5 AM Pakistan time on the 1st.
+export async function getCurrentMonthPayroll(now: Date = new Date()) {
+  const { month, year } = karachiYearMonth(now);
 
   const [employees, entries] = await Promise.all([
     prisma.employee.findMany({ where: { isActive: true }, orderBy: { name: "asc" } }),

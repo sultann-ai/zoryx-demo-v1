@@ -6,6 +6,7 @@ import { useEmployees } from "../../hooks/useEmployees";
 import { Input, Select, Table, TableBody, TableCell, TableHead, TableHeaderCell, TableRow, tintBgClassForStatus } from "../../components/ui";
 import { cn } from "../../components/ui/cn";
 import { ATTENDANCE_STATUS_LABEL } from "../../lib/enumLabels";
+import { addDays, shopToday } from "../../lib/shopTime";
 
 const STATUS_OPTIONS: AttendanceStatus[] = ["PRESENT", "ABSENT", "LEAVE", "HALF_DAY"];
 
@@ -24,16 +25,15 @@ function enumerateDates(startDate: string, endDate: string): string[] {
   return dates;
 }
 
+// The last 7 Pakistan dates, ending today.
 function defaultStartDate(): string {
-  const date = new Date();
-  date.setUTCDate(date.getUTCDate() - 6);
-  return formatDate(date);
+  return addDays(shopToday(), -6);
 }
 
 export function AttendanceGrid() {
   const { data: employees, isError: isEmployeesError } = useEmployees();
   const [startDate, setStartDate] = useState(defaultStartDate);
-  const [endDate, setEndDate] = useState(() => formatDate(new Date()));
+  const [endDate, setEndDate] = useState(() => shopToday());
   const { data: records, isLoading, isError } = useAttendanceRange(startDate, endDate);
   const markMutation = useMarkAttendance();
 

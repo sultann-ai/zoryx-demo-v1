@@ -11,6 +11,7 @@ import type {
 import { reportsApi } from "../api/reports";
 import { useCurrentBusinessDay } from "../hooks/useBusinessDay";
 import { useSalesReport } from "../hooks/useSalesReport";
+import { addDays, shopToday } from "../lib/shopTime";
 import {
   Button,
   Card,
@@ -42,14 +43,13 @@ function downloadBlob(blob: Blob, filename: string): void {
   URL.revokeObjectURL(url);
 }
 
+// Pakistan dates, like the report itself.
 function defaultFrom(): string {
-  const date = new Date();
-  date.setUTCDate(date.getUTCDate() - 6);
-  return date.toISOString().slice(0, 10);
+  return addDays(shopToday(), -6);
 }
 
 function today(): string {
-  return new Date().toISOString().slice(0, 10);
+  return shopToday();
 }
 
 export function ReportsPage() {
