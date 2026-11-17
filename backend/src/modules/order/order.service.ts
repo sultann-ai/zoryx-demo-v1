@@ -510,7 +510,7 @@ export interface CreateOrderInput {
   deals?: CreateOrderDealInput[];
 }
 
-type MenuItemWithVariants = Prisma.MenuItemGetPayload<{ include: { variants: true } }>;
+export type MenuItemWithVariants = Prisma.MenuItemGetPayload<{ include: { variants: true } }>;
 
 // Shared by createOrder and addOrderItems — the two places a direct (non-deal) order
 // line gets priced. A menu item with any priced size (variant) must be ordered via one
@@ -596,7 +596,18 @@ function resolveDealCustomizationVariant(
   return { variantId: variant.id, variantLabel: variant.label };
 }
 
-type AddOnWithPrices = Prisma.AddOnGetPayload<{ include: { prices: true } }>;
+export type AddOnWithPrices = Prisma.AddOnGetPayload<{ include: { prices: true } }>;
+export type DealWithItems = Prisma.DealGetPayload<{
+  include: { items: { include: { menuItem: { select: { id: true; kitchenId: true } } } } };
+}>;
+
+// Everything pricing an order needs, already loaded. buildOrderLines fills it from the database; the
+// demo seed (prisma/demo) fills it once and prices thousands of orders through the same code.
+export interface OrderPricingCatalog {
+  menuItemById: Map<string, MenuItemWithVariants>;
+  addOnById: Map<string, AddOnWithPrices>;
+  dealById: Map<string, DealWithItems>;
+}
 
 // Add-ons are scoped to one category (see AddOn's schema comment — size labels alone
 // collide across categories, e.g. Fries also has a "Large") and priced per size, so a
@@ -698,6 +709,41 @@ async function buildOrderLines(
 
   const addOnById = await loadAddOnById([...items, ...customizationItems]);
 
+  const dealIds = [...new Set(requestedDeals.map((deal) => deal.dealId))];
+  const dealRows =
+    dealIds.length > 0
+      ? await prisma.deal.findMany({
+          where: { id: { in: dealIds } },
+          include: { items: { include: { menuItem: { select: { id: true, kitchenId: true } } } } },
+        })
+      : [];
+  const dealById = new Map(dealRows.map((deal) => [deal.id, deal]));
+
+  for (const dealId of dealIds) {
+    if (!dealById.has(dealId)) {
+      throw new DealNotFoundError(dealId);
+    }
+  }
+  if (options.onlineOnly) {
+    for (const deal of dealRows) {
+      if (!deal.isActive || !deal.isAvailableOnline || deal.items.length === 0) {
+        throw new ItemNotOrderableOnlineError(`deal ${deal.id} is not available to order online`);
+      }
+    }
+  }
+
+  return priceOrderLines(items, requestedDeals, { menuItemById, addOnById, dealById });
+}
+
+// The pricing itself, with no database access: every direct line through resolveItemPrice/resolveAddOns,
+// every deal line at its price (or its customized final price) and exploded into zero-priced items.
+// Every id must be in the catalog (buildOrderLines checks that before calling this).
+export function priceOrderLines(
+  items: CreateOrderItemInput[],
+  requestedDeals: CreateOrderDealInput[],
+  catalog: OrderPricingCatalog,
+) {
+  const { menuItemById, addOnById, dealById } = catalog;
   const orderItemsCreateData = items.map((item) => {
     // Non-null: existence of every menuItemId was just verified above.
     const menuItem = menuItemById.get(item.menuItemId)!;
@@ -726,29 +772,6 @@ async function buildOrderLines(
       ...(item.notes !== undefined ? { notes: item.notes } : {}),
     };
   });
-
-  const dealIds = [...new Set(requestedDeals.map((deal) => deal.dealId))];
-  const dealRows =
-    dealIds.length > 0
-      ? await prisma.deal.findMany({
-          where: { id: { in: dealIds } },
-          include: { items: { include: { menuItem: { select: { id: true, kitchenId: true } } } } },
-        })
-      : [];
-  const dealById = new Map(dealRows.map((deal) => [deal.id, deal]));
-
-  for (const dealId of dealIds) {
-    if (!dealById.has(dealId)) {
-      throw new DealNotFoundError(dealId);
-    }
-  }
-  if (options.onlineOnly) {
-    for (const deal of dealRows) {
-      if (!deal.isActive || !deal.isAvailableOnline || deal.items.length === 0) {
-        throw new ItemNotOrderableOnlineError(`deal ${deal.id} is not available to order online`);
-      }
-    }
-  }
 
   const pendingDealLines = requestedDeals.map((requested) => {
     // Non-null: existence of every dealId was just verified above.
@@ -1096,8 +1119,10 @@ function emitOrderItemsByKitchen(
   }
 }
 
+// Through emitSafely like the reception emits: the demo seed (prisma/demo) places and accepts real
+// orders from a script, where Socket.io was never started.
 function emitNewOrderItemsByKitchen(order: OrderWithItems): void {
-  emitOrderItemsByKitchen("order-item:new", order, order.items);
+  emitSafely(() => emitOrderItemsByKitchen("order-item:new", order, order.items));
 }
 
 export interface ListOrdersFilter {

@@ -121,6 +121,18 @@ describe("the POS Admin discount cap in site settings", () => {
   });
 });
 
+describe("GET /api/pos/app-info", () => {
+  it("is public and tells only whether this is a demo install", async () => {
+    const response = await call("GET", "/api/pos/app-info");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ isDemo: false });
+  });
+
+  it("isDemo can't be set through site settings (only the demo seed sets it)", async () => {
+    expect((await call("PUT", "/api/pos/site-settings", "SUPER_ADMIN", { isDemo: true })).status).toBe(400);
+  });
+});
+
 describe("the takeaway auto-complete switch in site settings", () => {
   it("can be changed by a SUPER_ADMIN or POS_ADMIN, not an ONLINE_ADMIN", async () => {
     const body = { autoCompleteTakeawayOnPayment: false };

@@ -18,6 +18,7 @@ import {
   galleryRouter,
   paymentAccountRouter,
   siteSettingsRouter,
+  appInfoRouter,
   testimonialRouter,
 } from "../modules/siteContent/siteContent.routes";
 import { staffRouter } from "../modules/staff/staff.routes";
@@ -52,6 +53,7 @@ posRouter.use("/vendors", vendorRouter);
 // gallery, testimonials). SUPER_ADMIN, POS_ADMIN, ONLINE_ADMIN.
 posRouter.use("/media", mediaAdminRouter);
 posRouter.use("/site-settings", siteSettingsRouter);
+posRouter.use("/app-info", appInfoRouter);
 posRouter.use("/delivery-areas", deliveryAreaRouter);
 posRouter.use("/payment-accounts", paymentAccountRouter);
 posRouter.use("/gallery", galleryRouter);

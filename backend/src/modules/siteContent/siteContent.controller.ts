@@ -11,6 +11,13 @@ export async function getSiteSettings(_req: Request, res: Response) {
   res.json(await service.getSiteSettings());
 }
 
+// GET /api/pos/app-info — public. Only what the POS shell needs before login: whether this is a demo
+// install (the "DEMO" pill in the logo and on receipts).
+export async function getAppInfo(_req: Request, res: Response) {
+  const settings = await service.getSiteSettings();
+  res.json({ isDemo: settings.isDemo === true });
+}
+
 export async function updateSiteSettings(req: Request, res: Response) {
   const body = req.body;
   if (typeof body !== "object" || body === null || Array.isArray(body)) {

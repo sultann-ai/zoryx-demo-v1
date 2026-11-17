@@ -33,13 +33,16 @@ function itemLine(item: OrderItem): string {
 // placed (the "table receipt", paymentConfirmed left false — nothing's been paid yet) and
 // once at payment confirmation (the "final receipt", paymentConfirmed: true). Same document
 // otherwise — only the confirmation line differs.
-export function buildReceiptDoc(order: OrderDetail, options?: { paymentConfirmed?: boolean }): PrintDoc {
+// `isDemo` (SiteSettings.isDemo, see useIsDemo) adds the "DEMO" line under the logo.
+export function buildReceiptDoc(order: OrderDetail, options?: { paymentConfirmed?: boolean; isDemo?: boolean }): PrintDoc {
   const blocks: Block[] = [];
 
   // One-color logo (the print protocol has no image block yet, so the wordmark is printed as text),
-  // then "DEMO" as plain text — the black logo has no pill.
+  // then, on a demo install only, "DEMO" as plain text — the black logo has no pill.
   blocks.push({ t: "text", text: shop.wordmark, align: "center", bold: true, size: 3 });
-  blocks.push({ t: "text", text: "DEMO", align: "center", bold: true });
+  if (options?.isDemo) {
+    blocks.push({ t: "text", text: "DEMO", align: "center", bold: true });
+  }
   if (shop.phone) {
     blocks.push({ t: "text", text: `Tel: ${shop.phone}`, align: "center" });
   }

@@ -1,6 +1,6 @@
 // Shop identity used on the customer-facing receipt only — never on kitchen tickets, which
 // stay as short as possible to save paper (see print/buildKitchenTicketDocs.ts).
-// The receipt shows the one-color logo (lowercase wordmark), "DEMO", then the footer URL — no
+// The receipt shows the one-color logo (lowercase wordmark), "DEMO" on a demo install, then the footer URL — no
 // separate shop-name line, since the logo already says it.
 export const shop = {
   name: "Zoryx",

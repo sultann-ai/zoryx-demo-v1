@@ -33,7 +33,8 @@ cd backend
 cp .env.example .env        # set DATABASE_URL, JWT_SECRET, PORT, CORS_ORIGIN, PRINT_AGENT_KEY
 npm install                 # also runs prisma generate
 npx prisma migrate dev      # apply migrations to your local database
-npm run seed:menu           # optional: load the Zoryx menu
+# optional, local demo data ("Scoops & Slices Café", 60 days of history, all passwords demo1234):
+# DEMO_RESET_ALLOWED=true npm run demo:reset -- --yes   (refuses on a database that has real orders)
 node scripts/create-admin.js
 npm run dev
 ```

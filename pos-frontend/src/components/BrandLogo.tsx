@@ -1,4 +1,7 @@
+import { useIsDemo } from "../hooks/useAppInfo";
+
 // Zoryx logo: rounded-square "Z" mark + live-text wordmark + "DEMO" pill (live text, never artwork).
+// The pill shows only on a demo install (SiteSettings.isDemo, read from GET /api/pos/app-info).
 // Sized by `size` (the wordmark's font-size in px); every other measure is in em so the lockup
 // scales as one piece. "primary" is for cream/white backgrounds, "reversed" for forest green only.
 type Variant = "primary" | "reversed";
@@ -26,8 +29,9 @@ export function BrandMark({ variant = "primary", size = 32 }: { variant?: Varian
 
 export function BrandLogo({ variant = "primary", size = 28 }: { variant?: Variant; size?: number }) {
   const reversed = variant === "reversed";
+  const isDemo = useIsDemo();
   return (
-    <span className="inline-flex items-center" style={{ fontSize: size, gap: "0.3em" }} aria-label="Zoryx demo">
+    <span className="inline-flex items-center" style={{ fontSize: size, gap: "0.3em" }} aria-label={isDemo ? "Zoryx demo" : "Zoryx"}>
       <BrandMark variant={variant} size={size * 1.25} />
       <span className="inline-flex items-start">
         <span
@@ -41,6 +45,7 @@ export function BrandLogo({ variant = "primary", size = 28 }: { variant?: Varian
         >
           zoryx
         </span>
+        {isDemo && (
         <span
           style={{
             fontFamily: "var(--font-body)",
@@ -58,6 +63,7 @@ export function BrandLogo({ variant = "primary", size = 28 }: { variant?: Varian
         >
           Demo
         </span>
+        )}
       </span>
     </span>
   );

@@ -98,14 +98,17 @@ export function KitchenDisplayPage() {
   // The server's queue replaces what's on screen every time it's fetched: the first load, and again
   // after every socket reconnect (anything that happened while the socket was down is in it). Live
   // events then patch it until the next fetch.
-  useEffect(() => {
-    if (!queueItems) {
-      return;
+  // (Adjusted while rendering, when the fetched queue changes — React's pattern for state that follows
+  // an input, rather than an effect that renders twice.)
+  const [appliedQueue, setAppliedQueue] = useState<KitchenQueueItem[] | undefined>(undefined);
+  if (queueItems !== appliedQueue) {
+    setAppliedQueue(queueItems);
+    if (queueItems) {
+      setItems(queueItems);
+      const present = new Set(queueItems.map((row) => row.id));
+      setNoteUpdatedIds((prev) => new Set([...prev].filter((id) => present.has(id))));
     }
-    setItems(queueItems);
-    const present = new Set(queueItems.map((row) => row.id));
-    setNoteUpdatedIds((prev) => new Set([...prev].filter((id) => present.has(id))));
-  }, [queueItems]);
+  }
 
   useEffect(() => {
     if (!kitchenId || !token || roomsKey === "") {

@@ -303,6 +303,8 @@ No toast system exists anywhere in this app (still true) and none was added for 
 
 ### 7.9 Design tokens and shared components
 
+**Demo pill (phase 2):** `BrandLogo` shows its "Demo" pill, and `buildReceiptDoc` prints its "DEMO" line, only when `GET /api/pos/app-info` says `isDemo: true` (`hooks/useAppInfo.ts`: `useIsDemo()`, false until known, cached for the session). Every receipt caller (OrderDetailPage, IncomingOrdersPage, IncomingOrderCard) passes `{ isDemo }`.
+
 `@theme` block, `src/index.css`. Notably, `index.css` imports only `tailwindcss/theme.css` + `tailwindcss/utilities.css`, **deliberately skipping Preflight** — native unstyled `<table>`/`<button>` elsewhere intentionally still look like plain HTML until migrated to the shared components.
 
 - **Base**: `--color-ink:#1b1f27`, `--color-ink-muted:#5b6472`, `--color-surface:#f6f3ea`, `--color-surface-raised:#ffffff`, `--color-border:#ddd9cb`, `--color-accent:#1f4d3a` (forest green — actions/links/focus rings/active nav only, never decorative) + `--color-accent-hover:#163a2b` (plus logo-only `--color-brand-forest:#1f4d3a`, `--color-brand-cream:#f6f1e4`, `--color-brand-lime:#c6e84a`; the logo is `components/BrandLogo.tsx`, live-text wordmark + "DEMO" pill).

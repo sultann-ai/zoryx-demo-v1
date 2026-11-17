@@ -310,7 +310,7 @@ Also: `DealComponent` (choice slots, seed-only), `Customer`/`CustomerAddress` (a
 
 Frontends: `VITE_API_URL`, `VITE_PRINTER_ID`, `VITE_ONLINE_SITE_URL` (POS); `VITE_API_URL`, `VITE_SITE_URL` (site). Agent: `BACKEND_URL`, `PRINT_AGENT_KEY`, `PRINTER_ID`, `PRINTER_INTERFACE`, `PRINTER_WIDTH_CHARS`.
 
-Security: bcrypt, staff password ≥8, deactivated staff rejected per request (HTTP; sockets keep working until token expiry), helmet, JSON 100 KB (50 KB online), in-memory per-IP rate limits (login, online 300/15 min, media 1000, guest orders 30, proof 20, status 600), uploads type-checked by bytes. First admin: `node scripts/create-admin.js`. Menu seed: `npm run seed:menu`.
+Security: bcrypt, staff password ≥8, deactivated staff rejected per request (HTTP; sockets keep working until token expiry), helmet, JSON 100 KB (50 KB online), in-memory per-IP rate limits (login, online 300/15 min, media 1000, guest orders 30, proof 20, status 600), uploads type-checked by bytes. First admin: `node scripts/create-admin.js`. Demo data: `DEMO_RESET_ALLOWED=true npm run demo:reset -- --yes` (wipes; refuses on a non-demo database with orders).
 
 ---
 

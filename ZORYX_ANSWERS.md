@@ -73,7 +73,7 @@ Q11: Customer-site name/tagline/phone/WhatsApp/address/hours/socials = database 
 - Settings placeholders "Zoryx": `backend/src/modules/siteContent/siteContent.service.ts:18`
 
 Q12: Yes:
-- Demo bakery menu: `backend/prisma/seed-data/zoryx-menu.ts`; kitchen name "Main Kitchen": `backend/prisma/seed.ts`
+- Demo data: `backend/prisma/demo/` ("Scoops & Slices Café", `npm run demo:reset`, phase 2; replaced the old bakery seed)
 - Phone 0300 5760395 / 923005760395, map link: `online-frontend/site.config.json`
 - Placeholder hero/"why us" copy: `online-frontend/src/i18n/en.ts:16,64`, `ur.ts:16,64`
 - Hall types FAMILY_HALL/GENTS_HALL: `backend/prisma/schema.prisma`
@@ -119,7 +119,7 @@ Q21: No — no CHANGELOG, no version endpoint; versions unused (`backend` 1.0.0,
 
 Q22: Applied migrations are safe to re-run (`migrate deploy` only applies pending ones). Risks:
 - `scripts/create-admin.js` upsert resets an existing username's password and role (default `ChangeMe123!`)
-- `prisma/seed.ts` deletes and recreates each seeded deal's components (local DB only; refuses non-localhost)
+- `npm run demo:reset` wipes every table (refuses unless DEMO_RESET_ALLOWED=true, --yes, and no orders or isDemo)
 - `20261026033721_...` reported "modified after applied" by `migrate dev`; effect on `migrate deploy` for existing DBs: UNKNOWN
 - `20261111120000_cutout_...` hand-written SQL
 
@@ -167,8 +167,7 @@ Q27:
 ## E. Demo readiness
 
 Q28: Partial.
-- Exists: menu seed (demo bakery, local DB only, needs "Main Kitchen" first) `backend/prisma/seed.ts`; one account per run `scripts/create-admin.js`; one fake online order `scripts/dev-fake-online-order.ts`
-- Missing: kitchens, tables, staff per role, employees, inventory/links, vendors, site content/photos, sample orders, sales history
+- Exists (phase 2): full demo dataset `backend/prisma/demo/` (`npm run demo:reset`): kitchens, tables, staff per role, employees, inventory/links, vendors, site content with placeholder photos, 60 days of orders, a live day; one account per run `scripts/create-admin.js`; one fake online order `scripts/dev-fake-online-order.ts`
 
 Q29: No.
 

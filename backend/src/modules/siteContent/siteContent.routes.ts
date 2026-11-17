@@ -13,6 +13,10 @@ siteSettingsRouter.use(...contentEditors);
 siteSettingsRouter.get("/", controller.getSiteSettings);
 siteSettingsRouter.put("/", controller.updateSiteSettings);
 
+// Public (no token): the POS login page needs it before anyone signs in.
+export const appInfoRouter = Router();
+appInfoRouter.get("/", controller.getAppInfo);
+
 function crudRouter(handlers: typeof controller.deliveryAreas) {
   const router = Router();
   router.use(...contentEditors);

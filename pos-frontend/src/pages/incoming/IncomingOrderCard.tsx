@@ -6,6 +6,7 @@ import { useAcceptOrder, useRejectOrder, useUpdateSubmission } from "../../hooks
 import { usePrintDocs } from "../../hooks/usePrinter";
 import { buildKitchenTicketDocs } from "../../print/buildKitchenTicketDocs";
 import { buildReceiptDoc } from "../../print/buildReceiptDoc";
+import { useIsDemo } from "../../hooks/useAppInfo";
 import { Button, Input, StatusBadge } from "../../components/ui";
 import { OnlineOrderInfo } from "../../components/OnlineOrderInfo";
 import { useAuth } from "../../context/AuthContext";
@@ -56,6 +57,7 @@ export function IncomingOrderCard({ order, kitchens, onGone, onPrintFailure }: I
   const rejectMutation = useRejectOrder();
   const updateSubmissionMutation = useUpdateSubmission();
   const printMutation = usePrintDocs();
+  const isDemo = useIsDemo();
 
   const isBusy = acceptMutation.isPending || rejectMutation.isPending || updateSubmissionMutation.isPending;
 
@@ -124,7 +126,7 @@ export function IncomingOrderCard({ order, kitchens, onGone, onPrintFailure }: I
       }
       if (andPrint) {
         try {
-          const docs = [buildReceiptDoc(accepted), ...buildKitchenTicketDocs(accepted, kitchens)];
+          const docs = [buildReceiptDoc(accepted, { isDemo }), ...buildKitchenTicketDocs(accepted, kitchens)];
           await printMutation.mutateAsync({ docs });
         } catch (error) {
           onPrintFailure(accepted, getApiErrorMessage(error, "Failed to print"));

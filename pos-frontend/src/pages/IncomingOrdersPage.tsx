@@ -9,6 +9,7 @@ import { useIncomingOrderChanges, useReviewOrderChange } from "../hooks/useOrder
 import { buildKitchenTicketDocs } from "../print/buildKitchenTicketDocs";
 import { diffAddedQuantities } from "../print/kitchenSlip";
 import { buildReceiptDoc } from "../print/buildReceiptDoc";
+import { useIsDemo } from "../hooks/useAppInfo";
 import { Button, EmptyState, PageHeader } from "../components/ui";
 import { EmptyOrdersIllustration } from "./incoming/EmptyOrdersIllustration";
 import { FindByCodeBox } from "./incoming/FindByCodeBox";
@@ -25,6 +26,7 @@ export function IncomingOrdersPage() {
   const { incomingOrders, connectionStatus, isMuted, toggleMute } = useIncomingOrdersContext();
   const { data: kitchens } = useKitchens();
   const printMutation = usePrintDocs();
+  const isDemo = useIsDemo();
   const { staff } = useAuth();
   // An online admin only sees online orders, so there is no source filter to offer; and order-change
   // requests (an order-taker asking to edit or cancel) are reception's, not theirs.
@@ -41,7 +43,7 @@ export function IncomingOrdersPage() {
       const result = await reviewChange.mutateAsync({ changeId, approved });
       if (approved && result.change.kind === "EDIT" && result.order) {
         const added = before ? diffAddedQuantities(before, result.order) : new Map<string, number>();
-        const docs = [buildReceiptDoc(result.order), ...buildKitchenTicketDocs(result.order, kitchens ?? [], { added })];
+        const docs = [buildReceiptDoc(result.order, { isDemo }), ...buildKitchenTicketDocs(result.order, kitchens ?? [], { added })];
         await printMutation.mutateAsync({ docs });
       }
     } catch (error) {
@@ -67,7 +69,7 @@ export function IncomingOrdersPage() {
 
   async function handleReprint(failure: PrintFailure) {
     try {
-      const docs = [buildReceiptDoc(failure.order), ...buildKitchenTicketDocs(failure.order, kitchens ?? [])];
+      const docs = [buildReceiptDoc(failure.order, { isDemo }), ...buildKitchenTicketDocs(failure.order, kitchens ?? [])];
       await printMutation.mutateAsync({ docs });
       setPrintFailures((prev) => prev.filter((item) => item.order.id !== failure.order.id));
     } catch (error) {

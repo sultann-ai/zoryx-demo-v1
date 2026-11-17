@@ -831,6 +831,9 @@ model SiteSettings {
   maxDiscountPercentPosAdmin Decimal  @default(20) @db.Decimal(5, 2)
   // A POS TAKEAWAY order is completed the moment it is marked paid (the customer has it in hand).
   autoCompleteTakeawayOnPayment Boolean @default(true)
+  // True only on a demo install (set by the demo seed, npm run demo:reset). Shows the "DEMO" pill in the
+  // POS logo and on receipts, and lets demo:reset wipe a database that already has orders.
+  isDemo                     Boolean  @default(false)
   facebookUrl                String?
   instagramUrl               String?
   tiktokUrl                  String?

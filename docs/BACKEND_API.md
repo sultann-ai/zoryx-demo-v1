@@ -107,6 +107,7 @@ GET /api/online/media/:id?size=thumb|full — the image itself (immutable, cache
 
 Staff admin (SUPER_ADMIN, POS_ADMIN, ONLINE_ADMIN)
 POST /api/pos/media (multipart: file + kind MENU_ITEM|DEAL|GALLERY|PAYMENT_QR) — JPEG/PNG/WEBP up to 8 MB; returns {id, urls}. Then attach it: PATCH /api/pos/menu/:id/online-content {imageId,nameUr,descriptionUr,isFeatured,isAvailableOnline,sortOrder}, PATCH /api/pos/categories/:id/online-content {nameUr,sortOrder}, PATCH /api/pos/deals/:id/online-content {imageId,nameUr,descriptionUr}. Replacing a photo deletes the old one. Any other field in those bodies (a price, kitchenId) is a 400.
+GET /api/pos/app-info — public, {isDemo} (show the DEMO pill only when true; set only by npm run demo:reset).
 GET/PUT /api/pos/site-settings (includes maxDiscountPercentPosAdmin, default 20 — only SUPER_ADMIN may change it); CRUD on /api/pos/delivery-areas (30 active), /payment-accounts (4), /gallery (24), /testimonials (12) — 409 when the active cap is exceeded.
 
 Guest checkout — order without an account (public; errors are always {code, error}; money fields are strings)

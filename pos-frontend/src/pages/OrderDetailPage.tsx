@@ -20,6 +20,7 @@ import {
   useUpdateOrderPaymentStatus,
 } from "../hooks/useOrders";
 import { usePrinterStatus, usePrintDocs } from "../hooks/usePrinter";
+import { useIsDemo } from "../hooks/useAppInfo";
 import { buildKitchenTicketDocs } from "../print/buildKitchenTicketDocs";
 import type { AddedQuantities } from "../print/kitchenSlip";
 import { encodeAdded, newItemQuantities } from "../print/kitchenSlip";
@@ -115,6 +116,7 @@ export function OrderDetailPage() {
   const itemNoteMutation = useUpdateOrderItemNote();
   const dealLineNoteMutation = useUpdateOrderDealLineNote();
   const { data: printerStatus } = usePrinterStatus();
+  const isDemo = useIsDemo();
   const printMutation = usePrintDocs();
   const releaseMutation = useReleaseScheduledOrder();
   const navigate = useNavigate();
@@ -345,7 +347,7 @@ export function OrderDetailPage() {
     // "receipt" (the payment-confirmation copy, printed later) are the same document apart
     // from the "Payment Confirmed" line, which only the latter carries — nothing's been paid
     // yet when the table copy goes out.
-    const docs = [buildReceiptDoc(order, { paymentConfirmed: kind === "receipt" })];
+    const docs = [buildReceiptDoc(order, { paymentConfirmed: kind === "receipt", isDemo })];
     const fallbackUrl = `/orders/${orderId}/print/receipt`;
     try {
       await printMutation.mutateAsync({ docs });
