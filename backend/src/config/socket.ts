@@ -3,6 +3,7 @@ import type { Server as HttpServer } from "http";
 import { createHash, timingSafeEqual } from "crypto";
 import jwt from "jsonwebtoken";
 import { StaffRole } from "../../generated/prisma/client";
+import { STAFF_SESSION_MESSAGE, asStaffClaims, checkStaffSession } from "../common/staffSession";
 import { env, isOriginAllowed } from "./env";
 
 export interface SocketStaff {
@@ -21,6 +22,34 @@ declare module "socket.io" {
 }
 
 let io: Server | undefined;
+
+// A handshake refused because of who the token belongs to (bad/expired token, deactivated or
+// changed account) carries data.code "AUTH", so the client logs out exactly as on an HTTP 401. Any
+// other refusal (e.g. the database was unreachable) has no code: the client just retries.
+function authError(message: string): Error {
+  const error = new Error(message) as Error & { data?: { code: string } };
+  error.data = { code: "AUTH" };
+  return error;
+}
+
+// Ends every live socket of one staff member at once — called when they are deactivated, deleted,
+// change role or kitchen, or have their password reset. Each gets "auth:revoked" first (the client
+// logs out on it), then a server-side disconnect; a reconnect would be refused by the handshake.
+export async function disconnectStaffSockets(staffId: string, reason: string): Promise<number> {
+  if (!io) {
+    return 0;
+  }
+  const sockets = await io.fetchSockets();
+  let count = 0;
+  for (const socket of sockets) {
+    if (socket.data.staffId === staffId) {
+      socket.emit("auth:revoked", { reason });
+      socket.disconnect();
+      count += 1;
+    }
+  }
+  return count;
+}
 
 function canJoinRoom(staff: SocketStaff, room: string): boolean {
   if (staff.role === StaffRole.SUPER_ADMIN || staff.role === StaffRole.POS_ADMIN) {
@@ -80,7 +109,7 @@ export function initSocket(httpServer: HttpServer): Server {
     },
   });
 
-  io.use((socket, next) => {
+  io.use(async (socket, next) => {
     const { token, agentKey, printerId } = socket.handshake.auth ?? {};
 
     if (typeof agentKey === "string" && typeof printerId === "string") {
@@ -105,15 +134,36 @@ export function initSocket(httpServer: HttpServer): Server {
     }
 
     if (typeof token !== "string") {
-      next(new Error("Missing auth token"));
+      next(authError("Missing auth token"));
       return;
     }
+    let payload: Record<string, unknown>;
     try {
-      socket.staff = jwt.verify(token, env.JWT_SECRET) as SocketStaff;
-      next();
+      payload = jwt.verify(token, env.JWT_SECRET) as Record<string, unknown>;
     } catch {
-      next(new Error("Invalid or expired token"));
+      next(authError("Invalid or expired token"));
+      return;
     }
+    const claims = asStaffClaims(payload);
+    if (!claims) {
+      next(authError("Invalid token: not a staff token"));
+      return;
+    }
+    // Same account check as HTTP (requireAuth): exists, active, same role and kitchen as the token.
+    try {
+      const problem = await checkStaffSession(claims);
+      if (problem) {
+        next(authError(STAFF_SESSION_MESSAGE[problem]));
+        return;
+      }
+    } catch {
+      next(new Error("Could not verify the staff account"));
+      return;
+    }
+    socket.staff = claims;
+    // What disconnectStaffSockets matches on (fetchSockets only exposes socket.data).
+    socket.data.staffId = claims.id;
+    next();
   });
 
   io.on("connection", (socket) => {

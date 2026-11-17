@@ -1,5 +1,5 @@
 import axios from "axios";
-import { clearStoredSession, getStoredToken } from "../auth/session";
+import { forceLogout, getStoredToken } from "../auth/session";
 
 export const apiClient = axios.create({
   baseURL: import.meta.env.VITE_API_URL,
@@ -22,11 +22,7 @@ apiClient.interceptors.response.use(
       // 401, but unauthenticated) would wrongly bounce the user to /login.
       const hadToken = Boolean(error.config?.headers?.Authorization);
       if (hadToken) {
-        clearStoredSession();
-        window.dispatchEvent(new Event("auth:logout"));
-        if (window.location.pathname !== "/login") {
-          window.location.assign("/login");
-        }
+        forceLogout();
       }
     }
     return Promise.reject(error);

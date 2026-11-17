@@ -185,6 +185,8 @@ Six pages under `/online-store/*`, all behind SUPER_ADMIN / POS_ADMIN / ONLINE_A
 
 `src/auth/session.ts`: localStorage key `"zoryx:staff-session"`, stored shape `{ staff: {id, name, username, role, kitchenId}, token }`. `getStoredSession()` wraps `JSON.parse` in try/catch, returning `null` on any failure.
 
+**Phase 1:** the 401 handling now lives in `forceLogout()` (`auth/session.ts`: clear the stored session, dispatch `auth:logout`, go to `/login`), shared by the axios interceptor below and by `socket/client.ts`, so a socket refused or revoked for auth reasons logs out exactly the same way (see §7.6).
+
 `src/api/client.ts`: axios instance, `baseURL: import.meta.env.VITE_API_URL`. Request interceptor attaches `Authorization: Bearer <token>` when one exists. Response interceptor's 401 handling, quoted:
 ```ts
 if (axios.isAxiosError(error) && error.response?.status === 401) {
@@ -221,6 +223,8 @@ export function connectSocket(token: string): Socket {
 }
 ```
 A fresh connection per caller, not a shared singleton — by design, since no consumer needs the connection to outlive its own screen/shell.
+
+**Phase 1:** `connectSocket` also logs out (`forceLogout()`, same as an HTTP 401) when the handshake is refused with `error.data.code === "AUTH"` (deactivated or changed account, bad or expired token) or when the server sends `auth:revoked` (the account was just deactivated, deleted, re-roled or had its password reset). Other connection errors don't log out; each consumer still shows its own disconnected state.
 
 **Consumer 1**: `src/pages/KitchenDisplayPage.tsx`. Lifecycle: effect runs only when `kitchenId && token` are both present → `connectSocket(token)` → `socket.emit("join", "kitchen:<id>", ackCallback)`, surfacing any join error into a visible banner. Listens for:
 - `connect_error` → sets a banner "Live updates disconnected: ‹message›. Reload the page to reconnect." (needed because socket auth failures don't go through the axios 401 interceptor — sockets aren't HTTP).

@@ -26,7 +26,7 @@ No order can be created without an active BusinessDay. POS app needs a visible "
 Never let the frontend compute or send a total. POST /orders only takes items: [{menuItemId, quantity}] — price/kitchen/total are all server-derived.
 KITCHEN-role accounts are scoped to their own kitchen on the kitchen queue and item-status update — don't build a kitchen picker for that role, just use their token's kitchen.
 Online orders: paymentMethod: "CASH" → order is CONFIRMED immediately. paymentMethod: "ONLINE" → requires a screenshot file upload, order sits PENDING / AWAITING_VERIFICATION until a staff member (ONLINE_ADMIN/SUPER_ADMIN) approves it via PATCH /api/online/payment/:orderId/verify or /reject.
-Live kitchen tickets use Socket.io, not polling: connect with auth: { token: <staffJWT> }, then emit join with "kitchen:<kitchenId>" (kitchen role) or "pos-admin" (admins), and listen for order-item:new / order-item:updated.
+Live kitchen tickets use Socket.io, not polling: connect with auth: { token: <staffJWT> } (refused with error.data.code "AUTH" if the account is inactive or its role/kitchen changed — log out on it; the server sends "auth:revoked" and disconnects when an account is deactivated, re-roled or has its password reset), then emit join with "kitchen:<kitchenId>" (kitchen role) or "pos-admin" (admins), and listen for order-item:new / order-item:updated.
 DINE_IN orders only exist on the POS side — the online endpoint only accepts TAKEAWAY/DELIVERY, and DELIVERY requires a saved customerAddressId.
 Endpoint reference
 Staff Auth (/api/pos/auth) — public

@@ -18,9 +18,11 @@ vi.mock("../config/prisma", () => {
         if (property === "order") {
           return new Proxy({}, { get: (_t, method) => (method === "findUnique" ? async () => state.orderRow : async () => []) });
         }
-        // requireAuth loads the staff row on every request: answer "active".
+        // requireAuth loads the staff row on every request: answer "active, with the token's role"
+        // (each test token's id is "staff-<ROLE>", see tokenFor).
         if (property === "staffUser") {
-          return new Proxy({}, { get: (_t, method) => (method === "findUnique" ? async () => ({ id: "staff-1", isActive: true }) : async () => []) });
+          const row = async ({ where }: { where: { id: string } }) => ({ id: where.id, isActive: true, role: where.id.slice("staff-".length), kitchenId: null });
+          return new Proxy({}, { get: (_t, method) => (method === "findUnique" ? row : async () => []) });
         }
         return new Proxy({}, { get: () => async () => [] });
       },
@@ -39,7 +41,7 @@ beforeAll(async () => {
   const { env } = await import("../config/env");
   const { posRouter } = await import("./pos.routes");
   const { errorHandler } = await import("../common/middlewares/errorHandler");
-  tokenFor = (role) => jwt.sign({ id: "staff-1", role, kitchenId: null }, env.JWT_SECRET, { expiresIn: "5m" });
+  tokenFor = (role) => jwt.sign({ id: `staff-${role}`, role, kitchenId: null }, env.JWT_SECRET, { expiresIn: "5m" });
   const app = express();
   app.use(express.json());
   app.use("/api/pos", posRouter);

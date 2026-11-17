@@ -2,7 +2,7 @@ import { NextFunction, Request, Response } from "express";
 import jwt from "jsonwebtoken";
 import { StaffRole } from "../../../generated/prisma/client";
 import { env } from "../../config/env";
-import { prisma } from "../../config/prisma";
+import { STAFF_SESSION_MESSAGE, asStaffClaims, checkStaffSession } from "../staffSession";
 
 export interface AuthPayload {
   id: string;
@@ -18,8 +18,6 @@ declare global {
     }
   }
 }
-
-const VALID_STAFF_ROLES = Object.values(StaffRole);
 
 export async function requireAuth(req: Request, res: Response, next: NextFunction) {
   const header = req.headers.authorization;
@@ -40,20 +38,19 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
 
   // Customer tokens carry `type: "customer"` instead of a `role` — reject them here
   // so a customer token can never be mistaken for an authenticated staff session.
-  if (typeof payload.id !== "string" || !(VALID_STAFF_ROLES as string[]).includes(payload.role as string)) {
+  const claims = asStaffClaims(payload);
+  if (!claims) {
     res.status(401).json({ error: "Invalid token: not a staff token" });
     return;
   }
 
-  // A token stays cryptographically valid for 12h, so check the account is still active —
-  // otherwise a deleted staff member keeps working until their token expires.
+  // A token stays cryptographically valid for 12h, so check the account is still active and still
+  // has the token's role and kitchen — otherwise a deactivated or demoted staff member keeps their
+  // old access until the token expires.
   try {
-    const staffUser = await prisma.staffUser.findUnique({
-      where: { id: payload.id },
-      select: { isActive: true },
-    });
-    if (!staffUser || !staffUser.isActive) {
-      res.status(401).json({ error: "This account has been deactivated" });
+    const problem = await checkStaffSession(claims);
+    if (problem) {
+      res.status(401).json({ error: STAFF_SESSION_MESSAGE[problem] });
       return;
     }
   } catch {
@@ -61,7 +58,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     return;
   }
 
-  req.staff = payload as unknown as AuthPayload;
+  req.staff = claims;
   next();
 }
 

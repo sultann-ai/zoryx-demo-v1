@@ -1,9 +1,34 @@
 import { Request, Response } from "express";
 import { StaffRole } from "../../../generated/prisma/client";
 import { validateNewPassword } from "../../common/password";
+import { disconnectStaffSockets } from "../../config/socket";
 import * as staffService from "./staff.service";
 
 const VALID_ROLES = Object.values(StaffRole);
+
+// Live sockets (Kitchen Display, Incoming orders, the order-taker app) of an account whose access
+// just changed are ended at once — HTTP is already refused by requireAuth on the next request. A
+// socket problem never fails the staff change itself.
+async function endLiveSessions(staffId: string, reason: string): Promise<void> {
+  try {
+    await disconnectStaffSockets(staffId, reason);
+  } catch (error) {
+    console.error(`Could not disconnect sockets of staff ${staffId}`, error);
+  }
+}
+
+// Why an update ends the account's live sessions, or null when it doesn't (a name change doesn't).
+export function revokeReason(
+  before: { role: StaffRole; kitchenId: string | null; isActive: boolean },
+  after: { role: StaffRole; kitchenId: string | null; isActive: boolean },
+  passwordReset: boolean,
+): string | null {
+  if (before.isActive && !after.isActive) return "Account deactivated";
+  if (before.role !== after.role) return "Role changed";
+  if (before.kitchenId !== after.kitchenId) return "Kitchen changed";
+  if (passwordReset) return "Password reset";
+  return null;
+}
 
 function isValidRole(role: unknown): role is StaffRole {
   return typeof role === "string" && (VALID_ROLES as string[]).includes(role);
@@ -105,6 +130,7 @@ export async function updateStaff(req: Request, res: Response) {
   }
 
   try {
+    const before = await staffService.getStaffById(req.params.id as string);
     const staff = await staffService.updateStaff(req.params.id as string, {
       ...(name !== undefined ? { name: name.trim() } : {}),
       ...(role !== undefined ? { role } : {}),
@@ -113,6 +139,10 @@ export async function updateStaff(req: Request, res: Response) {
       ...(isActive !== undefined ? { isActive } : {}),
       ...(password !== undefined ? { password } : {}),
     });
+    const reason = before ? revokeReason(before, staff, password !== undefined) : null;
+    if (reason) {
+      await endLiveSessions(staff.id, reason);
+    }
     res.json(staff);
   } catch (error) {
     if (staffService.isNotFoundError(error)) {
@@ -134,6 +164,7 @@ export async function updateStaff(req: Request, res: Response) {
 export async function deactivateStaff(req: Request, res: Response) {
   try {
     const staff = await staffService.deactivateStaff(req.params.id as string);
+    await endLiveSessions(staff.id, "Account deleted");
     res.json(staff);
   } catch (error) {
     if (staffService.isNotFoundError(error)) {
