@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import type { Socket } from "socket.io-client";
 import { getApiErrorMessage } from "../api/errors";
 import type {
@@ -49,24 +50,31 @@ export function KitchenDisplayPage() {
   // request for any other kitchenId).
   const kitchenId = staff?.kitchenId ?? null;
 
-  const { data: initialItems, isLoading, isError } = useKitchenQueue(kitchenId);
+  const queryClient = useQueryClient();
+  const { data: queueItems, isLoading, isError } = useKitchenQueue(kitchenId);
   // The login record only carries kitchenId, not the name. The list endpoint is
   // open to any signed-in staff, so look this account's own kitchen up in it.
   const { data: kitchens } = useKitchens();
   const kitchenName = kitchens?.find((kitchen) => kitchen.id === kitchenId)?.name;
   const [items, setItems] = useState<KitchenQueueItem[]>([]);
   const [actionError, setActionError] = useState<string | null>(null);
+  // "reconnecting" while the socket is down; it reconnects by itself and the queue is refetched then.
+  const [connection, setConnection] = useState<"live" | "reconnecting">("live");
   // Items whose note changed after they reached this screen — flagged until the kitchen next
   // advances them, so a changed instruction can't slip by as just another card.
   const [noteUpdatedIds, setNoteUpdatedIds] = useState<ReadonlySet<string>>(new Set());
-  const hasInitialized = useRef(false);
 
+  // The server's queue replaces what's on screen every time it's fetched: the first load, and again
+  // after every socket reconnect (anything that happened while the socket was down is in it). Live
+  // events then patch it until the next fetch.
   useEffect(() => {
-    if (!hasInitialized.current && initialItems) {
-      setItems(initialItems);
-      hasInitialized.current = true;
+    if (!queueItems) {
+      return;
     }
-  }, [initialItems]);
+    setItems(queueItems);
+    const present = new Set(queueItems.map((row) => row.id));
+    setNoteUpdatedIds((prev) => new Set([...prev].filter((id) => present.has(id))));
+  }, [queueItems]);
 
   useEffect(() => {
     if (!kitchenId || !token) {
@@ -75,20 +83,29 @@ export function KitchenDisplayPage() {
 
     const socket: Socket = connectSocket(token);
     const room = `kitchen:${kitchenId}`;
+    let hasConnectedBefore = false;
 
-    socket.emit("join", room, (result: { ok: boolean; error?: string }) => {
-      if (!result.ok) {
-        setActionError(result.error ?? "Failed to join the live kitchen queue.");
+    // Every (re)connect is a new server-side socket with no rooms: join again each time, and after a
+    // reconnect refetch the queue so nothing missed while offline stays missing (or stays on screen).
+    // An auth refusal logs out (socket/client.ts); anything else just keeps retrying by itself.
+    function handleConnect() {
+      socket.emit("join", room, (result: { ok: boolean; error?: string }) => {
+        if (!result.ok) {
+          setActionError(result.error ?? "Failed to join the live kitchen queue.");
+        }
+      });
+      setConnection("live");
+      if (hasConnectedBefore) {
+        void queryClient.invalidateQueries({ queryKey: ["kitchen-queue", kitchenId] });
       }
-    });
-
-    // Auth failures here (e.g. an expired token) don't go through the axios
-    // interceptor — sockets aren't HTTP — so without this the page would just
-    // silently stop receiving live updates with no indication anything's wrong.
-    function handleConnectError(error: Error) {
-      setActionError(`Live updates disconnected: ${error.message}. Reload the page to reconnect.`);
+      hasConnectedBefore = true;
     }
-    socket.on("connect_error", handleConnectError);
+    function handleConnectionLost() {
+      setConnection("reconnecting");
+    }
+    socket.on("connect", handleConnect);
+    socket.on("disconnect", handleConnectionLost);
+    socket.on("connect_error", handleConnectionLost);
 
     function toRows(payload: NewOrderItemsSocketPayload): KitchenQueueItem[] {
       return payload.items.map((item) => ({
@@ -123,7 +140,7 @@ export function KitchenDisplayPage() {
       setNoteUpdatedIds((prev) => withoutId(prev, payload.id));
     }
 
-    // The order was cancelled, or an item was taken off it: those cards leave the screen.
+    // The order was cancelled or completed, or an item was taken off it: those cards leave the screen.
     function handleItemsGone(payload: OrderItemsGoneSocketPayload) {
       const goneIds = new Set(payload.itemIds);
       setItems((prev) => prev.filter((row) => !goneIds.has(row.id)));
@@ -134,6 +151,7 @@ export function KitchenDisplayPage() {
     socket.on("order-item:note-updated", handleNoteUpdated);
     socket.on("order-item:updated", handleUpdatedItem);
     socket.on("order:cancelled", handleItemsGone);
+    socket.on("order:completed", handleItemsGone);
     socket.on("order-item:removed", handleItemsGone);
 
     return () => {
@@ -141,11 +159,14 @@ export function KitchenDisplayPage() {
       socket.off("order-item:note-updated", handleNoteUpdated);
       socket.off("order-item:updated", handleUpdatedItem);
       socket.off("order:cancelled", handleItemsGone);
+      socket.off("order:completed", handleItemsGone);
       socket.off("order-item:removed", handleItemsGone);
-      socket.off("connect_error", handleConnectError);
+      socket.off("connect", handleConnect);
+      socket.off("disconnect", handleConnectionLost);
+      socket.off("connect_error", handleConnectionLost);
       socket.disconnect();
     };
-  }, [kitchenId, token]);
+  }, [kitchenId, token, queryClient]);
 
   async function handleAdvance(item: KitchenQueueItem) {
     const nextStatus = NEXT_STATUS[item.status];
@@ -181,6 +202,11 @@ export function KitchenDisplayPage() {
 
       {/* A system-level alert, not a routine per-item status — unlike the
           quiet dot+label pills below, this is meant to be impossible to miss. */}
+      {connection === "reconnecting" && (
+        <div role="status" className="bg-status-warning px-4 py-3 text-section font-semibold text-ink sm:px-8 sm:py-4">
+          Connection lost — reconnecting… The queue refreshes by itself when it's back.
+        </div>
+      )}
       {actionError && (
         <div role="alert" className="bg-status-danger px-4 py-3 text-section font-semibold text-white sm:px-8 sm:py-4">
           {actionError}

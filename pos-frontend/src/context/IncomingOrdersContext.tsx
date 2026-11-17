@@ -78,11 +78,6 @@ export function IncomingOrdersProvider({ children }: { children: ReactNode }) {
     }
 
     const socket: Socket = connectSocket(token);
-    socket.emit("join", "pos-admin", (result: { ok: boolean; error?: string }) => {
-      if (!result.ok) {
-        console.error("Failed to join pos-admin room:", result.error);
-      }
-    });
 
     function refetchIncoming() {
       queryClient.invalidateQueries({ queryKey: ["orders", "incoming"] });
@@ -109,7 +104,14 @@ export function IncomingOrdersProvider({ children }: { children: ReactNode }) {
       refetchIncoming();
     }
 
+    // Every (re)connect is a new server-side socket with no rooms, so the room is joined here each
+    // time, not once — otherwise live updates would silently stop after the first reconnect.
     function handleConnect() {
+      socket.emit("join", "pos-admin", (result: { ok: boolean; error?: string }) => {
+        if (!result.ok) {
+          console.error("Failed to join pos-admin room:", result.error);
+        }
+      });
       setConnectionStatus("live");
       refetchIncoming();
     }

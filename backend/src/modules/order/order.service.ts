@@ -2943,7 +2943,9 @@ export function getKitchenQueue(kitchenId: string) {
   return prisma.orderItem.findMany({
     where: {
       kitchenId,
-      status: { in: [OrderItemStatus.PENDING, OrderItemStatus.PREPARING] },
+      // READY too: the Kitchen Display keeps a ready card (with "Mark Served") until it's served, so a
+      // refetch after a reconnect has to bring it back rather than drop it.
+      status: { in: [OrderItemStatus.PENDING, OrderItemStatus.PREPARING, OrderItemStatus.READY] },
       // An AWAITING_RECEPTION order's items are real PENDING rows in the database (the
       // kitchen emit is just skipped at creation) — without this, a reload of the kitchen
       // screen would surface them anyway via this plain REST refetch.

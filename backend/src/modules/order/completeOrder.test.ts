@@ -181,4 +181,18 @@ describe.skipIf(!isLocalDb)("kitchen queue (local DB, rolled back)", () => {
     });
     expect(result.rows.map((row) => row.orderId)).toEqual([result.live.id]);
   });
+
+  it("keeps READY items (they still need Mark Served) and drops SERVED ones", async () => {
+    const statuses = await withRollback(async (tx) => {
+      const world = await seedOrderWorld(tx);
+      const ready = await world.order({ type: "DINE_IN" });
+      const served = await world.order({ type: "DINE_IN" });
+      const burgerOf = (order: typeof ready) => order.items.find((item) => item.kitchenId === world.kitchenA.id)!.id;
+      await tx.orderItem.update({ where: { id: burgerOf(ready) }, data: { status: "READY" } });
+      await tx.orderItem.update({ where: { id: burgerOf(served) }, data: { status: "SERVED" } });
+      const rows = await orderService.getKitchenQueue(world.kitchenA.id);
+      return rows.map((row) => [row.orderId === ready.id ? "ready-order" : "served-order", row.status]);
+    });
+    expect(statuses).toEqual([["ready-order", "READY"]]);
+  });
 });
