@@ -1,0 +1,26 @@
+- **End state:** 366/366 backend tests pass (340 before); backend build OK; pos-frontend build + lint OK (0 errors, the same 23 warnings as before); online-frontend build OK.
+- **Task 1, complete orders** (`360672d`): migration `20261117120000_order_complete`: `OrderEventType.COMPLETED`, `SiteSettings.autoCompleteTakeawayOnPayment` (default true).
+  - New `POST /api/pos/orders/:id/complete` (SA, PA): paid PENDING/CONFIRMED order, any source/type → COMPLETED, unserved items → SERVED, COMPLETED event with actor, `order:completed` to kitchens. 409 `UNPAID` / `NOT_COMPLETABLE`.
+  - Marking a POS TAKEAWAY paid completes it in the same transaction (flag; SA/PA can change it, Store settings card). `/delivered` now writes the same event.
+  - End Day 400 adds `openOrders`; dialog in `BusinessDayBar.tsx` completes/cancels each in place. Files: `order.service/controller/routes.ts`, `businessDay.*`, `CompleteOrderDialog.tsx`, `ConfirmPaymentForm.tsx`, `OrderDetailPage.tsx`, `OrdersPage.tsx`, `lib/displayStatus.ts` (In kitchen / Ready / Served, display only).
+- **Task 2, KDS** (`1fd1568`): **Phase 1 had already done** the removal of cancelled orders and removed items via socket. Added: rejoin + queue refetch on every reconnect (no reload banner), `order:completed` removes cards, queue returns READY items and never cancelled/completed orders. Incoming orders also rejoin `pos-admin` on reconnect (was a silent bug).
+- **Task 3, admin KDS + sessions** (`3b2279a`): no migration. `GET /kitchen-queue?kitchenId=all` (SA/PA). `canJoinRoom` already let SA/PA into any kitchen room (now tested). Sidebar "Kitchen Display ↗" (new tab), kitchen picker / All kitchens.
+  - `auth/session.ts`: slots `zoryx:staff-session:admin|taker|kitchen`, chosen per tab from the URL; login/logout/401 touch only the tab's slot; old key migrated. KDS has "Kitchen staff login" (`/login?slot=kitchen`).
+- **Task 4, demo** (`2a22e2e`): migration `20261117130000_site_settings_is_demo`; public `GET /api/pos/app-info` `{isDemo}` drives the logo pill and receipt DEMO line. Seed in `backend/prisma/demo/`; old bakery seed removed. Pricing split into exported pure `priceOrderLines`.
+- **Reset command** (from `backend/`): `DEMO_RESET_ALLOWED=true npm run demo:reset -- --yes`
+  - Needs a migrated DB (`npx prisma migrate deploy`). Refuses without the env flag, without `--yes`, or on a DB with orders that isn't `isDemo`.
+- **Logins** (password `demo1234` for all):
+  - `owner` SUPER_ADMIN (Ahmed Raza) · `manager` POS_ADMIN (Bilal Khan) · `cashier` POS_ADMIN (Sana Iqbal) · `online` ONLINE_ADMIN (Ayesha Malik)
+  - `waiter1` / `waiter2` / `waiter3` ORDER_TAKER (Usman Ali, Hamza Sheikh, Zainab Noor)
+  - `scoop` / `bakery` / `chaibar` KITCHEN (Imran → Scoop Counter, Shahid → Bakery & Cakes, Nadeem → Chai & Shakes Bar)
+- **Rows created:** 4,909 orders (4,897 history + 12 today) · 11,311 order items · 11,880 order events · 61 business days · 59 menu items · 14 employees (10 logins) · 780 attendance · 26 inventory items · 5 vendors (120 ledger entries) · 81 images.
+- **Runtime:** 28.8–30.0 s locally, identical counts and sales (Rs 9,057,460) on both runs. All order totals reconcile to their lines; mix 45/35/20 type, 59/25/16 source, 2.7% cancelled, 4.4% discounted.
+- **Verified:** End Day on the demo via the real API: scheduled → cancel, 9 open orders paid/completed/one cancelled, then End Day OK **without force**. Session slots checked with a 3-tab simulation of `session.ts`.
+- **Not done / check these:**
+  - No click-through in a real browser (no browser available here). The three-tabs result is verified on the session logic only; please try it once in Chrome.
+  - I seeded into a separate local schema (`?schema=demo`) because your dev `public` schema has 4 orders and the reset rightly refused it. Your dev data is untouched.
+  - Images are generated placeholders (gradient + name): replace them with real photos via "Menu photos and names".
+  - Auto-complete on payment also takes the takeaway off the KDS. If the counter takes payment before cooking, turn the switch off.
+  - The POS now uses Complete instead of Mark delivered for online orders. `/delivered` still exists and still doesn't require payment.
+  - Admins on the KDS get no Log out button (it would end the admin session in every admin tab). Waiter orders are always dine-in in history; POS deliveries carry no fee (the POS can't set one).
+  - HawkScan not run (no runtime/API key). Migrations were applied to the local DB only (`migrate dev` can't create a shadow DB, so SQL came from `migrate diff` + `migrate deploy`).
