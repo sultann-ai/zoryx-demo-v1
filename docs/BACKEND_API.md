@@ -34,7 +34,7 @@ Staff Auth (/api/pos/auth) — public
 POST /login — {username, password} → {token, staff}
 Business Day (/api/pos/business-day) — POS_ADMIN, SUPER_ADMIN
 
-GET /current · POST /start {label?} · POST /end {force?}
+GET /current · POST /start {label?} · POST /end {force?} — without force, 400 {code: UNPAID_ORDERS|OPEN_ORDERS, orderIds, unpaidOrders:[{orderNumber,totalAmount}], unpaidTotal} while orders are open or unpaid
 Kitchens (/api/pos/kitchens) — read: any staff · write: SUPER_ADMIN
 
 GET / GET /:id POST / {name, isActive?} PUT /:id DELETE /:id
@@ -76,7 +76,8 @@ POST /:id/adjust {type: STOCK_IN|STOCK_OUT|ADJUSTMENT, quantity, note?} (MANUAL 
 GET/POST /links GET/PUT/DELETE /links/:id {menuItemId, inventoryItemId, quantityPerOrder}
 Reports (/api/pos/reports) — POS_ADMIN/SUPER_ADMIN
 
-GET /dashboard — today's active business day only
+Sales everywhere = orders not CANCELLED/AWAITING_RECEPTION/SCHEDULED AND paymentStatus VERIFIED (cash marked paid or online verified); unpaid accepted orders are reported separately, never in sales.
+GET /dashboard — today's active business day only (adds unpaidCount/unpaidAmount, cancelledAfterPaymentCount/Amount)
 GET /sales?from=&to=&groupBy=day|month
 GET /export?type=daily|monthly&businessDayId= — binary xlsx
 Customer Auth (/api/online/auth) — public

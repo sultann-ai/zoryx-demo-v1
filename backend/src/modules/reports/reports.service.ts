@@ -1,7 +1,7 @@
 import { OrderStatus, Prisma } from "../../../generated/prisma/client";
 import { prisma } from "../../config/prisma";
 import { firstOfMonth, lastOfMonth } from "../../common/pkTime";
-import { Db, NOT_COUNTED_STATUSES, fetchBusinessDayStats } from "./salesDefinitions";
+import { Db, SALES_ORDER_WHERE, fetchBusinessDayStats } from "./salesDefinitions";
 
 export class NoActiveBusinessDayError extends Error {}
 export class BusinessDayNotFoundError extends Error {}
@@ -26,11 +26,9 @@ export async function getDashboard() {
   const awaitingReceptionCount = await prisma.order.count({
     where: { businessDayId: activeBusinessDay.id, status: OrderStatus.AWAITING_RECEPTION },
   });
-  const EXCLUDED_STATUSES = [...NOT_COUNTED_STATUSES];
-
   const topItemsGrouped = await prisma.orderItem.groupBy({
     by: ["menuItemId"],
-    where: { order: { businessDayId: activeBusinessDay.id, status: { notIn: EXCLUDED_STATUSES } } },
+    where: { order: { businessDayId: activeBusinessDay.id, ...SALES_ORDER_WHERE } },
     _sum: { quantity: true },
     orderBy: { _sum: { quantity: "desc" } },
     take: 5,
@@ -53,6 +51,11 @@ export async function getDashboard() {
     totalSales: stat.sales,
     orderCount: stat.orders,
     cancelledCount: stat.cancelledCount,
+    // Accepted but not paid yet — never part of totalSales.
+    unpaidCount: stat.unpaidCount,
+    unpaidAmount: stat.unpaidValue,
+    cancelledAfterPaymentCount: stat.cancelledPaidCount,
+    cancelledAfterPaymentAmount: stat.cancelledPaidValue,
     awaitingReceptionCount,
     topItems,
   };

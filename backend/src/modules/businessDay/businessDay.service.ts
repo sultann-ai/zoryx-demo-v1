@@ -1,5 +1,6 @@
-import { OrderStatus } from "../../../generated/prisma/client";
+import { OrderStatus, Prisma } from "../../../generated/prisma/client";
 import { prisma } from "../../config/prisma";
+import { UNPAID_ORDER_WHERE } from "../reports/salesDefinitions";
 
 const BLOCKING_STATUSES: OrderStatus[] = [
   OrderStatus.PENDING,
@@ -33,6 +34,18 @@ export async function getBlockingOrderIds(businessDayId: string): Promise<string
     select: { id: true },
   });
   return orders.map((order) => order.id);
+}
+
+// Accepted orders on this day that nobody has marked paid (salesDefinitions' "unpaid") — they are
+// not in the day's sales. Listed, by number and amount, before staff may end the day anyway.
+export async function getUnpaidOrders(businessDayId: string) {
+  const orders = await prisma.order.findMany({
+    where: { businessDayId, ...UNPAID_ORDER_WHERE },
+    select: { id: true, orderNumber: true, totalAmount: true, status: true, paymentMethod: true },
+    orderBy: { orderNumber: "asc" },
+  });
+  const total = orders.reduce((sum, order) => sum.plus(order.totalAmount), new Prisma.Decimal(0));
+  return { orders, total };
 }
 
 export function endBusinessDay(businessDayId: string, closedById: string) {

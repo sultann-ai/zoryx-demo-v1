@@ -101,9 +101,21 @@ export function KpiCards({ analytics }: { analytics: Analytics }) {
         detail={
           <>
             {formatRs(totals.cancelledValue)} · {formatPercent(totals.cancellationRate)} of orders
+            {totals.cancelledPaidCount > 0 && (
+              <span className="block font-medium text-status-danger-text">
+                {formatInt(totals.cancelledPaidCount)} after payment · {formatRs(totals.cancelledPaidValue)}
+              </span>
+            )}
           </>
         }
         spark={spark.cancelled}
+      />
+      <KpiCard
+        label="Unpaid"
+        icon="sales"
+        tint={5}
+        value={formatRs(totals.unpaidValue)}
+        detail={<>{formatInt(totals.unpaidCount)} order(s) not marked paid · not in sales</>}
       />
       <KpiCard
         label="Online orders"

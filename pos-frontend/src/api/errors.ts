@@ -8,6 +8,9 @@ export interface ApiErrorBody {
   // business-day/end's 409 when scheduled orders are still on hold.
   code?: string;
   scheduledOrders?: { id: string; orderNumber: number; scheduledFor: string }[];
+  // business-day/end's 400: accepted orders nobody marked paid (not in the day's sales).
+  unpaidOrders?: { id: string; orderNumber: number; totalAmount: string; status: string }[];
+  unpaidTotal?: string;
 }
 
 export function getApiErrorBody(error: unknown): ApiErrorBody | undefined {

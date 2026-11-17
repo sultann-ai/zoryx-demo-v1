@@ -18,6 +18,12 @@ export interface AnalyticsTotals {
   cancelledCount: number;
   cancelledValue: string;
   cancellationRate: number;
+  // Cancelled orders that had been paid (part of cancelledCount/Value).
+  cancelledPaidCount: number;
+  cancelledPaidValue: string;
+  // Accepted, not cancelled, not paid yet — shown on its own, never part of sales.
+  unpaidCount: number;
+  unpaidValue: string;
   onlineOrders: number;
   onlineShare: number;
   dineIn: number;

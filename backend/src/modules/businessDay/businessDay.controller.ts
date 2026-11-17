@@ -66,10 +66,24 @@ export async function end(req: Request, res: Response) {
 
   if (force !== true) {
     const orderIds = await businessDayService.getBlockingOrderIds(active.id);
-    if (orderIds.length > 0) {
+    // Unpaid orders (open or delivered) aren't in the day's sales: list them, by number and
+    // amount, so whoever ends the day anyway does it knowingly.
+    const unpaid = await businessDayService.getUnpaidOrders(active.id);
+    if (orderIds.length > 0 || unpaid.orders.length > 0) {
+      const problems = [
+        orderIds.length > 0
+          ? `${orderIds.length} order(s) are still open (awaiting reception, pending, confirmed, in kitchen, or ready — not yet marked delivered)`
+          : null,
+        unpaid.orders.length > 0
+          ? `${unpaid.orders.length} order(s) are not marked paid (Rs ${unpaid.total.toFixed(2)}, not counted in sales)`
+          : null,
+      ].filter((problem): problem is string => problem !== null);
       res.status(400).json({
-        error: "Cannot end business day: some orders are still open (awaiting reception, pending, confirmed, in kitchen, or ready — not yet marked delivered)",
+        code: unpaid.orders.length > 0 ? "UNPAID_ORDERS" : "OPEN_ORDERS",
+        error: `Cannot end business day: ${problems.join("; ")}`,
         orderIds,
+        unpaidOrders: unpaid.orders,
+        unpaidTotal: unpaid.total,
       });
       return;
     }

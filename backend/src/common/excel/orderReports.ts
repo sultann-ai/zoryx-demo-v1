@@ -1,6 +1,6 @@
 import ExcelJS from "exceljs";
 import { Prisma } from "../../../generated/prisma/client";
-import { isCountedStatus } from "../../modules/reports/salesDefinitions";
+import { isSalesOrder, isUnpaidOrder } from "../../modules/reports/salesDefinitions";
 
 export interface OrderRow {
   orderNumber: number;
@@ -73,13 +73,15 @@ export function buildDailyReportWorkbook(
 ): ExcelJS.Workbook {
   const workbook = new ExcelJS.Workbook();
 
-  // None of CANCELLED (never happened), AWAITING_RECEPTION (not accepted yet) or SCHEDULED
-  // (not released yet) counts toward sales or the real order count.
+  // Sales = paid, accepted, not cancelled (salesDefinitions.ts). Unpaid accepted orders are listed
+  // on their own and never added to sales.
   const awaitingCount = orders.filter((order) => order.status === "AWAITING_RECEPTION").length;
   const scheduledCount = orders.filter((order) => order.status === "SCHEDULED").length;
   const cancelledCount = orders.filter((order) => order.status === "CANCELLED").length;
-  const validOrders = orders.filter((order) => isCountedStatus(order.status));
+  const validOrders = orders.filter(isSalesOrder);
   const totalSales = validOrders.reduce((sum, order) => sum.plus(order.totalAmount), ZERO);
+  const unpaidOrders = orders.filter(isUnpaidOrder);
+  const unpaidTotal = unpaidOrders.reduce((sum, order) => sum.plus(order.totalAmount), ZERO);
 
   const summarySheet = workbook.addWorksheet("Summary");
   summarySheet.addRows([
@@ -91,9 +93,12 @@ export function buildDailyReportWorkbook(
     ["Awaiting Reception Count", awaitingCount],
     ["Scheduled (not released) Count", scheduledCount],
     ["Total Sales", totalSales.toNumber()],
+    [],
+    ["Unpaid Count (not in sales)", unpaidOrders.length],
+    ["Unpaid Amount (not in sales)", unpaidTotal.toNumber()],
   ]);
   summarySheet.getColumn(1).font = { bold: true };
-  summarySheet.getColumn(1).width = 20;
+  summarySheet.getColumn(1).width = 28;
   summarySheet.getColumn(2).width = 24;
 
   addOrdersSheet(workbook, "Orders", orders);

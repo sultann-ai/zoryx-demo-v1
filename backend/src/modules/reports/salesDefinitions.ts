@@ -1,15 +1,19 @@
 import { OrderStatus, PaymentStatus, Prisma } from "../../../generated/prisma/client";
 import { PK_TIME_ZONE } from "../../common/pkTime";
 
-// The ONE place that decides what "sales", "orders" and "cancelled" mean. The dashboard, the
-// Reports page, the monthly/daily Excel exports and the analytics endpoint all read from here,
+// The ONE place that decides what "sales", "orders", "unpaid" and "cancelled" mean. The dashboard,
+// the Reports page, the monthly/daily Excel exports and the analytics endpoint all read from here,
 // so they cannot drift apart.
 //
-//   sales / orders      = orders whose status is NOT in NOT_COUNTED_STATUSES, summed on
-//                         Order.totalAmount (items + deals + delivery fee - discount).
-//   cancelled           = status CANCELLED (count and totalAmount).
-//   cash / online sales = counted orders split on Order.paymentMethod.
-//   online orders       = counted orders with source ONLINE.
+//   sales / orders      = orders whose status is NOT in NOT_COUNTED_STATUSES AND that are paid
+//                         (paymentStatus VERIFIED: cash marked paid, or online payment verified),
+//                         summed on Order.totalAmount (items + deals + delivery fee - discount).
+//   unpaid              = orders whose status is NOT in NOT_COUNTED_STATUSES and that are NOT
+//                         paid (count and totalAmount) — shown on its own, never added to sales.
+//   cancelled           = status CANCELLED (count and totalAmount); "cancelled after payment" is
+//                         the CANCELLED ones still marked paid (a cancel never unmarks payment).
+//   cash / online sales = sales split on Order.paymentMethod.
+//   online orders       = sales orders with source ONLINE.
 //   a day               = a BusinessDay, labelled by the Asia/Karachi date it opened.
 //
 // Not real yet, either way: CANCELLED never happened, AWAITING_RECEPTION hasn't been accepted,
@@ -28,14 +32,41 @@ export function isPaid(order: { paymentStatus: string }): boolean {
   return order.paymentStatus === PAID_PAYMENT_STATUS;
 }
 
-export function isCountedStatus(status: string): boolean {
+type SalesFields = { status: string; paymentStatus: string };
+
+// Accepted and not cancelled — a real order, paid or not.
+function isLiveStatus(status: string): boolean {
   return !(NOT_COUNTED_STATUSES as readonly string[]).includes(status);
 }
 
-// SQL fragments (the status list is a code constant, never user input).
+export function isSalesOrder(order: SalesFields): boolean {
+  return isLiveStatus(order.status) && isPaid(order);
+}
+
+export function isUnpaidOrder(order: SalesFields): boolean {
+  return isLiveStatus(order.status) && !isPaid(order);
+}
+
+// The same two definitions as Prisma filters, for queries that don't go through SQL below.
+export const SALES_ORDER_WHERE = {
+  status: { notIn: [...NOT_COUNTED_STATUSES] },
+  paymentStatus: PAID_PAYMENT_STATUS,
+} satisfies Prisma.OrderWhereInput;
+
+export const UNPAID_ORDER_WHERE = {
+  status: { notIn: [...NOT_COUNTED_STATUSES] },
+  paymentStatus: { not: PAID_PAYMENT_STATUS },
+} satisfies Prisma.OrderWhereInput;
+
+// SQL fragments (the status lists are code constants, never user input).
 const NOT_COUNTED_LIST = Prisma.raw(NOT_COUNTED_STATUSES.map((status) => `'${status}'`).join(", "));
-export const SQL_COUNTED = Prisma.sql`o."status" NOT IN (${NOT_COUNTED_LIST})`;
+const SQL_LIVE = Prisma.sql`o."status" NOT IN (${NOT_COUNTED_LIST})`;
+const SQL_PAID = Prisma.sql`o."paymentStatus" = ${Prisma.raw(`'${PAID_PAYMENT_STATUS}'`)}`;
+// "Counted" = sales.
+export const SQL_COUNTED = Prisma.sql`(${SQL_LIVE} AND ${SQL_PAID})`;
+export const SQL_UNPAID = Prisma.sql`(${SQL_LIVE} AND NOT ${SQL_PAID})`;
 export const SQL_CANCELLED = Prisma.sql`o."status" = 'CANCELLED'`;
+export const SQL_CANCELLED_PAID = Prisma.sql`(${SQL_CANCELLED} AND ${SQL_PAID})`;
 // Prisma DateTime columns are `timestamp without time zone` holding UTC. `AT TIME ZONE 'UTC'`
 // first turns that into a real instant; the second `AT TIME ZONE` then reads it in Karachi.
 // (Using only the second would treat the UTC wall-clock as Karachi time and bucket by UTC.)
@@ -57,6 +88,10 @@ export interface BusinessDayStat {
   orders: number;
   cancelledCount: number;
   cancelledValue: Prisma.Decimal;
+  cancelledPaidCount: number;
+  cancelledPaidValue: Prisma.Decimal;
+  unpaidCount: number;
+  unpaidValue: Prisma.Decimal;
   cashSales: Prisma.Decimal;
   onlineSales: Prisma.Decimal;
   onlineOrders: number;
@@ -77,6 +112,10 @@ interface RawStat {
   orders: number;
   cancelledCount: number;
   cancelledValue: Prisma.Decimal;
+  cancelledPaidCount: number;
+  cancelledPaidValue: Prisma.Decimal;
+  unpaidCount: number;
+  unpaidValue: Prisma.Decimal;
   cashSales: Prisma.Decimal;
   onlineSales: Prisma.Decimal;
   onlineOrders: number;
@@ -103,6 +142,10 @@ export async function fetchBusinessDayStats(db: Db, range: StatRange): Promise<B
       (COUNT(o."id") FILTER (WHERE ${SQL_COUNTED}))::int AS "orders",
       (COUNT(o."id") FILTER (WHERE ${SQL_CANCELLED}))::int AS "cancelledCount",
       COALESCE(SUM(o."totalAmount") FILTER (WHERE ${SQL_CANCELLED}), 0) AS "cancelledValue",
+      (COUNT(o."id") FILTER (WHERE ${SQL_CANCELLED_PAID}))::int AS "cancelledPaidCount",
+      COALESCE(SUM(o."totalAmount") FILTER (WHERE ${SQL_CANCELLED_PAID}), 0) AS "cancelledPaidValue",
+      (COUNT(o."id") FILTER (WHERE ${SQL_UNPAID}))::int AS "unpaidCount",
+      COALESCE(SUM(o."totalAmount") FILTER (WHERE ${SQL_UNPAID}), 0) AS "unpaidValue",
       COALESCE(SUM(o."totalAmount") FILTER (WHERE ${SQL_COUNTED} AND o."paymentMethod" = 'CASH'), 0) AS "cashSales",
       COALESCE(SUM(o."totalAmount") FILTER (WHERE ${SQL_COUNTED} AND o."paymentMethod" = 'ONLINE'), 0) AS "onlineSales",
       (COUNT(o."id") FILTER (WHERE ${SQL_COUNTED} AND o."source" = 'ONLINE'))::int AS "onlineOrders",
@@ -120,6 +163,8 @@ export async function fetchBusinessDayStats(db: Db, range: StatRange): Promise<B
     ...row,
     sales: new Prisma.Decimal(row.sales),
     cancelledValue: new Prisma.Decimal(row.cancelledValue),
+    cancelledPaidValue: new Prisma.Decimal(row.cancelledPaidValue),
+    unpaidValue: new Prisma.Decimal(row.unpaidValue),
     cashSales: new Prisma.Decimal(row.cashSales),
     onlineSales: new Prisma.Decimal(row.onlineSales),
   }));

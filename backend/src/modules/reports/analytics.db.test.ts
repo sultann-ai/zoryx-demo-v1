@@ -64,6 +64,8 @@ async function seed(tx: Prisma.TransactionClient) {
         type: "DINE_IN",
         paymentMethod: "CASH",
         status: "COMPLETED",
+        // Paid unless a test says otherwise: only paid orders are sales.
+        paymentStatus: "VERIFIED",
         totalAmount: 0,
         createdAt: at(createdAt),
         ...rest,
@@ -82,13 +84,16 @@ async function seed(tx: Prisma.TransactionClient) {
   const bd0 = await day("prev", "2001-03-08T10:00:00Z");
   await order(bd0.id, "2001-03-08T10:30:00Z", { totalAmount: 400 });
 
-  // 2001-03-10 (Karachi): 1000 cash dine-in with an item, 500 online takeaway, a cancelled 300,
-  // and an awaiting-reception 999 that must not count.
+  // 2001-03-10 (Karachi): 1000 cash dine-in with an item, 500 online takeaway, a cancelled 300
+  // that had been paid, an awaiting-reception 999 that must not count, and two unpaid orders (a
+  // delivered 120 and a pending 80) that are "unpaid", never sales.
   const bd1 = await day("d1", "2001-03-10T15:00:00Z");
   await order(bd1.id, "2001-03-10T15:30:00Z", { totalAmount: 1000, withItem: true });
   await order(bd1.id, "2001-03-10T16:00:00Z", { totalAmount: 500, source: "ONLINE", type: "TAKEAWAY", paymentMethod: "ONLINE" });
   await order(bd1.id, "2001-03-10T16:30:00Z", { totalAmount: 300, status: "CANCELLED", cancelledReason: "Customer left" });
   await order(bd1.id, "2001-03-10T17:00:00Z", { totalAmount: 999, status: "AWAITING_RECEPTION" });
+  await order(bd1.id, "2001-03-10T17:10:00Z", { totalAmount: 120, paymentStatus: "PENDING" });
+  await order(bd1.id, "2001-03-10T17:20:00Z", { totalAmount: 80, status: "PENDING", paymentStatus: "PENDING" });
 
   // Crosses midnight: opens 02:00 Karachi on 2001-03-11 (that is 21:00 UTC on the 10th, so a UTC
   // bucket would call it the 10th) and takes an order at 03:00 Karachi on the 12th.
@@ -121,13 +126,17 @@ describe.skipIf(!isLocal)("analytics against the database (rolled back)", () => 
     });
 
     expect(result.range).toMatchObject({ from: "2001-03-10", to: "2001-03-13", days: 4, previousFrom: "2001-03-06", previousTo: "2001-03-09" });
-    // 1000 + 500 + 700 + 200; the cancelled 300 and awaiting-reception 999 are not sales.
+    // 1000 + 500 + 700 + 200; the cancelled 300, awaiting-reception 999 and unpaid 120 + 80 are not sales.
     expect(result.totals).toMatchObject({
       sales: "2400.00",
       orders: 4,
       averageOrderValue: "600.00",
       cancelledCount: 1,
       cancelledValue: "300.00",
+      cancelledPaidCount: 1,
+      cancelledPaidValue: "300.00",
+      unpaidCount: 2,
+      unpaidValue: "200.00",
       onlineOrders: 1,
       dineIn: 2,
       takeaway: 1,

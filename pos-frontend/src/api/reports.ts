@@ -15,6 +15,11 @@ export interface Dashboard {
   // Orders waiting at reception (AWAITING_RECEPTION) — excluded from totalSales/orderCount,
   // same as cancelledCount.
   awaitingReceptionCount: number;
+  // Accepted but not marked paid — never part of totalSales.
+  unpaidCount: number;
+  unpaidAmount: string;
+  cancelledAfterPaymentCount: number;
+  cancelledAfterPaymentAmount: string;
   topItems: DashboardTopItem[];
 }
 

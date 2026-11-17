@@ -6,6 +6,7 @@ import { getApiErrorBody, getApiErrorMessage, getApiErrorStatus } from "../api/e
 import { useAuth } from "../context/AuthContext";
 import { useCurrentBusinessDay, useEndBusinessDay, useStartBusinessDay } from "../hooks/useBusinessDay";
 import { useCancelScheduledOrder, useReleaseScheduledOrder } from "../hooks/useOrders";
+import { formatMoney } from "../lib/format";
 import { formatShopTime } from "../lib/shopTime";
 import { Button, Modal } from "./ui";
 
@@ -56,11 +57,23 @@ export function BusinessDayBar() {
         setPendingScheduled(body.scheduledOrders);
         return;
       }
-      if (status === 400 && Array.isArray(body?.orderIds) && body.orderIds.length > 0) {
-        const orderIds = body.orderIds;
-        const confirmed = window.confirm(
-          `${orderIds.length} order(s) are still open (awaiting reception, pending, confirmed, in kitchen, or ready — not yet marked delivered):\n${orderIds.join(", ")}\n\nEnd the business day anyway?`,
-        );
+      const orderIds = body?.orderIds ?? [];
+      const unpaidOrders = body?.unpaidOrders ?? [];
+      if (status === 400 && (orderIds.length > 0 || unpaidOrders.length > 0)) {
+        const parts: string[] = [];
+        if (orderIds.length > 0) {
+          parts.push(
+            `${orderIds.length} order(s) are still open (awaiting reception, pending, confirmed, in kitchen, or ready — not yet marked delivered).`,
+          );
+        }
+        if (unpaidOrders.length > 0) {
+          // By number and amount, so whoever ends the day knows exactly what isn't in today's sales.
+          parts.push(
+            `${unpaidOrders.length} order(s) are NOT marked paid — ${formatMoney(body?.unpaidTotal ?? "0")} not counted in sales:\n` +
+              unpaidOrders.map((order) => `  #${order.orderNumber} · ${formatMoney(order.totalAmount)}`).join("\n"),
+          );
+        }
+        const confirmed = window.confirm(`${parts.join("\n\n")}\n\nEnd the business day anyway?`);
         if (confirmed) {
           try {
             await endMutation.mutateAsync(true);

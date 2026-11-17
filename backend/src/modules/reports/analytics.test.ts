@@ -10,7 +10,7 @@ import {
   canSeeFinancials,
   resolveRange,
 } from "./analytics.service";
-import { BusinessDayStat, isCountedStatus } from "./salesDefinitions";
+import { BusinessDayStat, isSalesOrder, isUnpaidOrder } from "./salesDefinitions";
 
 const D = (value: number | string) => new Prisma.Decimal(value);
 
@@ -25,6 +25,10 @@ function stat(date: string, over: Partial<BusinessDayStat> = {}): BusinessDaySta
     orders: 0,
     cancelledCount: 0,
     cancelledValue: D(0),
+    cancelledPaidCount: 0,
+    cancelledPaidValue: D(0),
+    unpaidCount: 0,
+    unpaidValue: D(0),
     cashSales: D(0),
     onlineSales: D(0),
     onlineOrders: 0,
@@ -184,12 +188,20 @@ describe("weekly and weekday views", () => {
 });
 
 describe("definitions and visibility", () => {
-  it("counts a status as real only when it is not cancelled, awaiting reception or scheduled", () => {
+  it("counts an order as a sale only when it is accepted, not cancelled, and paid", () => {
     for (const status of ["PENDING", "CONFIRMED", "IN_KITCHEN", "READY", "COMPLETED"]) {
-      expect(isCountedStatus(status)).toBe(true);
+      expect(isSalesOrder({ status, paymentStatus: "VERIFIED" }), status).toBe(true);
+      expect(isUnpaidOrder({ status, paymentStatus: "VERIFIED" }), status).toBe(false);
+      for (const paymentStatus of ["PENDING", "AWAITING_VERIFICATION", "REJECTED"]) {
+        expect(isSalesOrder({ status, paymentStatus }), `${status}/${paymentStatus}`).toBe(false);
+        expect(isUnpaidOrder({ status, paymentStatus }), `${status}/${paymentStatus}`).toBe(true);
+      }
     }
     for (const status of ["CANCELLED", "AWAITING_RECEPTION", "SCHEDULED"]) {
-      expect(isCountedStatus(status)).toBe(false);
+      for (const paymentStatus of ["PENDING", "VERIFIED"]) {
+        expect(isSalesOrder({ status, paymentStatus }), status).toBe(false);
+        expect(isUnpaidOrder({ status, paymentStatus }), status).toBe(false);
+      }
     }
   });
 

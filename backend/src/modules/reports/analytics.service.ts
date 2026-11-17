@@ -109,6 +109,12 @@ export interface Totals {
   cancelledValue: string;
   // cancelled / (counted + cancelled), 0..1
   cancellationRate: number;
+  // Cancelled orders that had been paid (money to hand back) — part of cancelledCount/Value.
+  cancelledPaidCount: number;
+  cancelledPaidValue: string;
+  // Accepted, not cancelled, not paid yet. Shown on its own; never part of sales.
+  unpaidCount: number;
+  unpaidValue: string;
   onlineOrders: number;
   onlineShare: number;
   dineIn: number;
@@ -252,6 +258,10 @@ export function buildTotals(stats: BusinessDayStat[], expenses: ExpenseRow[], fi
     cancelledCount,
     cancelledValue: money(sum(stats.map((stat) => stat.cancelledValue))),
     cancellationRate: orders + cancelledCount > 0 ? cancelledCount / (orders + cancelledCount) : 0,
+    cancelledPaidCount: stats.reduce((total, stat) => total + stat.cancelledPaidCount, 0),
+    cancelledPaidValue: money(sum(stats.map((stat) => stat.cancelledPaidValue))),
+    unpaidCount: stats.reduce((total, stat) => total + stat.unpaidCount, 0),
+    unpaidValue: money(sum(stats.map((stat) => stat.unpaidValue))),
     onlineOrders,
     onlineShare: orders > 0 ? onlineOrders / orders : 0,
     dineIn: stats.reduce((total, stat) => total + stat.dineIn, 0),
