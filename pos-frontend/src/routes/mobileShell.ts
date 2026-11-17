@@ -1,6 +1,6 @@
 import { matchPath } from "react-router-dom";
 import type { StaffRole } from "../auth/session";
-import { NAV_ITEMS } from "./navItems";
+import { NAV_ITEMS, NEW_TAB_NAV_ITEMS } from "./navItems";
 
 // Navigation model for the mobile shell (below 768px): a bottom tab bar with
 // the few destinations used all day, a "More" menu with the rest, and
@@ -12,6 +12,8 @@ export type ShellIconName = "dashboard" | "orders" | "newOrder" | "inventory" | 
 export interface ShellDestination {
   to: string;
   label: string;
+  // Opens in a new browser tab (the Kitchen Display), never as a tab-bar entry.
+  newTab?: boolean;
 }
 
 export interface ShellTab extends ShellDestination {
@@ -51,9 +53,12 @@ export function getShellNav(role: StaffRole): { tabs: ShellTab[]; more: ShellDes
   }
 
   const tabPaths = new Set(tabDestinations.map((destination) => destination.to));
+  const newTab: ShellDestination[] = NEW_TAB_NAV_ITEMS.filter((item) => item.allowedRoles.includes(role)).map(
+    ({ to, label }) => ({ to, label, newTab: true }),
+  );
   return {
     tabs: tabDestinations.map((destination) => ({ ...destination, icon: TAB_ICONS[destination.to] ?? "list" })),
-    more: accessible.filter((destination) => !tabPaths.has(destination.to)),
+    more: [...accessible.filter((destination) => !tabPaths.has(destination.to)), ...newTab],
   };
 }
 

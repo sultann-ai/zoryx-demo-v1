@@ -42,12 +42,12 @@ function AppRoutes() {
       <Route path="/" element={<RootRedirect />} />
 
       {/* KITCHEN accounts only ever see the Kitchen Display — no shared app shell/nav for them,
-          so this route sits outside the AppLayout below. Reachable only by KITCHEN: the page
-          loads the queue for the token's own kitchenId, which SUPER_ADMIN/POS_ADMIN tokens don't have. */}
+          so this route sits outside the AppLayout below. A KITCHEN account sees its own kitchen only;
+          SUPER_ADMIN/POS_ADMIN open it from the sidebar (new tab) and pick a kitchen or "All kitchens". */}
       <Route
         path="/kitchen-display"
         element={
-          <ProtectedRoute allowedRoles={["KITCHEN"]}>
+          <ProtectedRoute allowedRoles={["KITCHEN", "SUPER_ADMIN", "POS_ADMIN"]}>
             <KitchenDisplayPage />
           </ProtectedRoute>
         }

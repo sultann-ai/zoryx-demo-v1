@@ -29,6 +29,26 @@ import { VendorsPage } from "../pages/VendorsPage";
 export const GROUP_ORDER = ["Operations", "Online store", "Setup", "Team", "Insights"] as const;
 export type NavGroup = (typeof GROUP_ORDER)[number];
 
+// A sidebar link to a full-screen page outside the shell, opened in a new tab (the Kitchen Display
+// runs on its own, often on another screen). Not part of the route tree: App.tsx declares the route.
+export interface NewTabNavItem {
+  to: string;
+  label: string;
+  allowedRoles: StaffRole[];
+  icon: IconName;
+  group: NavGroup;
+}
+
+export const NEW_TAB_NAV_ITEMS: NewTabNavItem[] = [
+  {
+    to: "/kitchen-display",
+    label: "Kitchen Display",
+    allowedRoles: ["SUPER_ADMIN", "POS_ADMIN"],
+    icon: "kitchens",
+    group: "Operations",
+  },
+];
+
 export interface NavItem {
   to: string;
   label: string;

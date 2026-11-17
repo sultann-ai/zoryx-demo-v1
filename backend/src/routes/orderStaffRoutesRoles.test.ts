@@ -63,6 +63,25 @@ async function call(method: string, path: string, role?: string, body: unknown =
 
 const reaches = (status: number) => status !== 401 && status !== 403;
 
+describe("GET /api/pos/kitchen-queue?kitchenId=all", () => {
+  const path = "/api/pos/kitchen-queue?kitchenId=all";
+
+  it("gives SUPER_ADMIN and POS_ADMIN every kitchen's queue", async () => {
+    for (const role of ["POS_ADMIN", "SUPER_ADMIN"]) {
+      const response = await call("GET", path, role);
+      expect(response.status, role).toBe(200);
+      expect(await response.json()).toEqual([]);
+    }
+  });
+
+  it("is refused to a KITCHEN account (its own kitchen only) and to everyone else", async () => {
+    expect((await call("GET", path, "KITCHEN")).status).toBe(403);
+    for (const role of ["ONLINE_ADMIN", "ORDER_TAKER"]) {
+      expect((await call("GET", path, role)).status, role).toBe(403);
+    }
+  });
+});
+
 describe("POST /api/pos/orders/:id/complete", () => {
   const path = "/api/pos/orders/some-id/complete";
 

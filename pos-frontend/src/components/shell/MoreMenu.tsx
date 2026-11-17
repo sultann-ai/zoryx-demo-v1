@@ -81,6 +81,17 @@ export function MoreMenu({ isOpen, onClose, destinations, staffName, onLogout }:
                 <ul className="m-0 list-none border-y border-border bg-surface-raised p-0">
                   {destinations.map((destination) => (
                     <li key={destination.to} className="border-b border-border last:border-b-0">
+                      {destination.newTab ? (
+                        <a
+                          href={destination.to}
+                          target="_blank"
+                          rel="noopener"
+                          onClick={onClose}
+                          className={cn("flex h-14 items-center px-4 text-body font-medium text-ink no-underline", FOCUS_RING)}
+                        >
+                          {destination.label} ↗
+                        </a>
+                      ) : (
                       <NavLink
                         to={destination.to}
                         onClick={onClose}
@@ -94,6 +105,7 @@ export function MoreMenu({ isOpen, onClose, destinations, staffName, onLogout }:
                       >
                         {destination.label}
                       </NavLink>
+                      )}
                     </li>
                   ))}
                 </ul>

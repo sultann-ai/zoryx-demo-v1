@@ -68,7 +68,7 @@ PATCH /:id/items/:itemId/notes {notes: string|null} · PATCH /:id/deal-lines/:de
 Scheduled orders: POST / with scheduledFor (ISO with zone, future, ≤ 24h) → status SCHEDULED, on hold (no Incoming, kitchen, stock, emit); released to AWAITING_RECEPTION automatically (job every 30s + on startup), exactly once
 GET /scheduled · POST /:id/release · PATCH /:id/schedule {scheduledFor} · PUT /:id/scheduled-items {items, deals?} · POST /:id/cancel-scheduled {reason?} — 409 once no longer SCHEDULED
 Business day end: 409 {code: "SCHEDULED_ORDERS_PENDING", scheduledOrders} while any are on hold (even with force)
-Kitchen Queue — GET /api/pos/kitchen-queue?kitchenId= (POS_ADMIN/SUPER_ADMIN/KITCHEN)
+Kitchen Queue — GET /api/pos/kitchen-queue?kitchenId= (POS_ADMIN/SUPER_ADMIN/KITCHEN) — PENDING/PREPARING/READY items of open orders; kitchenId=all for SA/PA (every kitchen). SA/PA may join any kitchen:<id> room and advance item status; KITCHEN stays on its own kitchen.
 
 Inventory (/api/pos/inventory) — POS_ADMIN/SUPER_ADMIN
 

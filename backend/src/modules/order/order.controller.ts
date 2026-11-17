@@ -1541,6 +1541,8 @@ export async function cancelScheduledOrder(req: Request, res: Response) {
   }
 }
 
+const ALL_KITCHENS = "all";
+
 export async function getKitchenQueue(req: Request, res: Response) {
   if (!req.staff) {
     res.status(401).json({ error: "Not authenticated" });
@@ -1556,6 +1558,12 @@ export async function getKitchenQueue(req: Request, res: Response) {
 
   if (req.staff.role === StaffRole.KITCHEN && req.staff.kitchenId !== kitchenId) {
     res.status(403).json({ error: "Forbidden: you can only view your own kitchen's queue" });
+    return;
+  }
+
+  // "All kitchens" on the admin's Kitchen Display (KITCHEN never gets here: "all" isn't its kitchen id).
+  if (kitchenId === ALL_KITCHENS) {
+    res.json(await orderService.getKitchenQueue());
     return;
   }
 

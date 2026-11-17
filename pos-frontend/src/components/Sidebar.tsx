@@ -2,8 +2,8 @@ import { NavLink } from "react-router-dom";
 import { BrandLogo } from "./BrandLogo";
 import { useAuth } from "../context/AuthContext";
 import { useIncomingOrdersContext } from "../context/IncomingOrdersContext";
-import type { NavGroup, NavItem } from "../routes/navItems";
-import { GROUP_ORDER, NAV_ITEMS } from "../routes/navItems";
+import type { NavGroup, NavItem, NewTabNavItem } from "../routes/navItems";
+import { GROUP_ORDER, NAV_ITEMS, NEW_TAB_NAV_ITEMS } from "../routes/navItems";
 import { Icon } from "./shell/icons";
 import { cn } from "./ui/cn";
 
@@ -15,6 +15,11 @@ export function Sidebar() {
   const { count: incomingOrdersCount } = useIncomingOrdersContext();
 
   const visibleItems = staff ? NAV_ITEMS.filter((item) => item.allowedRoles.includes(staff.role)) : [];
+  const visibleNewTabItems = staff ? NEW_TAB_NAV_ITEMS.filter((item) => item.allowedRoles.includes(staff.role)) : [];
+  const newTabByGroup = new Map<NavGroup, NewTabNavItem[]>();
+  for (const item of visibleNewTabItems) {
+    newTabByGroup.set(item.group, [...(newTabByGroup.get(item.group) ?? []), item]);
+  }
 
   const itemsByGroup = new Map<NavGroup, NavItem[]>();
   for (const item of visibleItems) {
@@ -40,8 +45,9 @@ export function Sidebar() {
           bottom padding keeps the last item clear of the edge on short screens. */}
       <nav aria-label="Main" className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3 pb-6 [scrollbar-width:thin]">
         {GROUP_ORDER.map((group) => {
-          const items = itemsByGroup.get(group);
-          if (!items || items.length === 0) {
+          const items = itemsByGroup.get(group) ?? [];
+          const newTabItems = newTabByGroup.get(group) ?? [];
+          if (items.length === 0 && newTabItems.length === 0) {
             return null;
           }
           return (
@@ -79,6 +85,27 @@ export function Sidebar() {
                         </>
                       )}
                     </NavLink>
+                  </li>
+                ))}
+                {newTabItems.map((item) => (
+                  <li key={item.to}>
+                    <a
+                      href={item.to}
+                      target="_blank"
+                      rel="noopener"
+                      className={cn(
+                        "flex items-center gap-2.5 rounded-card border-l-2 border-transparent px-3 py-2 text-body font-medium text-ink-muted no-underline transition-colors hover:bg-surface hover:text-ink",
+                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-surface",
+                      )}
+                    >
+                      <span className="text-ink-muted">
+                        <Icon name={item.icon} />
+                      </span>
+                      <span className="flex-1">{item.label}</span>
+                      <span className="text-meta text-ink-muted" aria-label="opens in a new tab">
+                        ↗
+                      </span>
+                    </a>
                   </li>
                 ))}
               </ul>

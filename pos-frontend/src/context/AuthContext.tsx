@@ -2,8 +2,10 @@ import { createContext, useContext, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import {
   clearStoredSession,
+  getActiveSlot,
   getStoredSession,
   setStoredSession,
+  storageKeyForSlot,
 } from "../auth/session";
 import type { AuthSession, AuthStaff } from "../auth/session";
 
@@ -29,6 +31,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     window.addEventListener("auth:logout", handleForcedLogout);
     return () => window.removeEventListener("auth:logout", handleForcedLogout);
+  }, []);
+
+  // Another tab in the same slot logged in, out, or was logged out by a 401: follow it, so two tabs
+  // of the same role never disagree about who is signed in. Other slots' changes are ignored.
+  useEffect(() => {
+    function handleStorage(event: StorageEvent) {
+      if (event.key === null || event.key === storageKeyForSlot(getActiveSlot())) {
+        setSession(getStoredSession());
+      }
+    }
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
   }, []);
 
   function login(nextSession: AuthSession) {

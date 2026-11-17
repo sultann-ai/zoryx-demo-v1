@@ -2939,10 +2939,11 @@ export function kitchenExists(id: string) {
   return prisma.kitchen.findUnique({ where: { id }, select: { id: true } }).then(Boolean);
 }
 
-export function getKitchenQueue(kitchenId: string) {
+// One kitchen's queue, or every kitchen's when kitchenId is omitted (the admin's "All kitchens").
+export function getKitchenQueue(kitchenId?: string) {
   return prisma.orderItem.findMany({
     where: {
-      kitchenId,
+      ...(kitchenId !== undefined ? { kitchenId } : {}),
       // READY too: the Kitchen Display keeps a ready card (with "Mark Served") until it's served, so a
       // refetch after a reconnect has to bring it back rather than drop it.
       status: { in: [OrderItemStatus.PENDING, OrderItemStatus.PREPARING, OrderItemStatus.READY] },

@@ -157,3 +157,32 @@ describe("ending live sessions", () => {
     expect(await gone).toBe("io server disconnect");
   });
 });
+
+describe("joining kitchen rooms", () => {
+  const join = (socket: Socket, room: string) =>
+    new Promise<{ ok: boolean; error?: string }>((resolve) => socket.emit("join", room, resolve));
+
+  it("lets SUPER_ADMIN and POS_ADMIN join any kitchen room (the admin Kitchen Display), others not", async () => {
+    addStaff("owner", "SUPER_ADMIN");
+    addStaff("manager", "POS_ADMIN");
+    addStaff("online", "ONLINE_ADMIN");
+    addStaff("waiter", "ORDER_TAKER");
+    addStaff("cook", "KITCHEN");
+    db.staff.get("cook")!.kitchenId = "kitchen-a";
+
+    const results: Record<string, boolean[]> = {};
+    for (const id of ["owner", "manager", "online", "waiter", "cook"]) {
+      const socket = client(tokenFor(id));
+      await connected(socket);
+      results[id] = [(await join(socket, "kitchen:kitchen-a")).ok, (await join(socket, "kitchen:kitchen-b")).ok];
+    }
+    expect(results).toEqual({
+      owner: [true, true],
+      manager: [true, true],
+      online: [false, false],
+      waiter: [false, false],
+      // A kitchen account stays locked to its own kitchen.
+      cook: [true, false],
+    });
+  });
+});

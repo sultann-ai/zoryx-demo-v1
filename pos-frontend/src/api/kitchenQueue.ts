@@ -70,7 +70,11 @@ export interface UpdatedOrderItemSocketPayload {
   order: { id: string; orderNumber: number };
 }
 
+// The admin Kitchen Display's "All kitchens" (SUPER_ADMIN/POS_ADMIN only — a KITCHEN account gets 403).
+export const ALL_KITCHENS = "all";
+
 export const kitchenQueueApi = {
+  // One kitchen's queue, or ALL_KITCHENS.
   get: async (kitchenId: string): Promise<KitchenQueueItem[]> => {
     const { data } = await apiClient.get<KitchenQueueItem[]>("/api/pos/kitchen-queue", {
       params: { kitchenId },
@@ -90,7 +94,7 @@ export const kitchenQueueApi = {
   },
 };
 
-// "order:cancelled" (the whole order) and "order-item:removed" (one line taken off it) — each
+// "order:cancelled" / "order:completed" (the whole order) and "order-item:removed" (one line taken off it) — each
 // kitchen room gets only its own item ids; the Kitchen Display drops those cards.
 export interface OrderItemsGoneSocketPayload {
   orderId: string;

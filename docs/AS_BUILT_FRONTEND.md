@@ -16,7 +16,7 @@ Single `<BrowserRouter>` → one `<AuthProvider>` → one `<Routes>` tree (`src/
 |---|---|---|---|
 | `/login` | LoginPage | any (redirects away if already authed) | standalone |
 | `/` | RootRedirect (inline) | n/a — redirects to `/login` or the role's home route | n/a |
-| `/kitchen-display` | KitchenDisplayPage | `KITCHEN` only | **standalone, outside AppLayout** |
+| `/kitchen-display` | KitchenDisplayPage | `KITCHEN`, `SUPER_ADMIN`, `POS_ADMIN` (phase 2) | **standalone, outside AppLayout** |
 | `/take-order` | TakeOrderPage | `ORDER_TAKER` only | **standalone, under TakerShell** |
 | `/my-orders` | MyOrdersPage | `ORDER_TAKER` only | **standalone, under TakerShell** |
 | `/orders/:id/print/receipt` | PrintReceiptPage | SUPER_ADMIN, POS_ADMIN | standalone |
@@ -45,6 +45,8 @@ Single `<BrowserRouter>` → one `<AuthProvider>` → one `<Routes>` tree (`src/
 | `/orders/:id` | OrderDetailPage | SUPER_ADMIN, POS_ADMIN (not in nav) | AppLayout |
 | `/vendors/:id` | VendorDetailPage | SUPER_ADMIN, POS_ADMIN (not in nav) | AppLayout |
 | `*` | → `Navigate to="/"` | — | — |
+
+**Kitchen Display for admins (phase 2):** `NEW_TAB_NAV_ITEMS` (`navItems.ts`) adds a "Kitchen Display ↗" link for SUPER_ADMIN/POS_ADMIN in the Operations group (sidebar) and in the mobile More menu. It is a plain `<a target="_blank">`, not a routed `NavItem`, so it opens the standalone page in a new tab. There the admin picks one active kitchen or "All kitchens" (remembered per browser in `localStorage` `zoryx:kds-kitchen`; a deactivated pick falls back to All), the page joins that kitchen's room or every active kitchen's room, cards show their kitchen name in All mode, and the admin can advance item status like the kitchen. The header has "Kitchen staff login" (→ `/login?slot=kitchen`) instead of Log out. A KITCHEN account still sees only its own kitchen, with Log out.
 
 **KITCHEN special case**: never appears in `NAV_ITEMS`; its only route is `/kitchen-display`, declared outside `<Route element={<AppLayout />}>` so it gets no sidebar/topbar/mobile shell. `getHomeRoute()` (`src/routes/homeRoute.ts`) special-cases KITCHEN straight to `/kitchen-display`; every other role's home is the first `NAV_ITEMS` entry it can access.
 
@@ -183,7 +185,7 @@ Six pages under `/online-store/*`, all behind SUPER_ADMIN / POS_ADMIN / ONLINE_A
 
 ### 7.4 Session handling and 401/403 behavior
 
-`src/auth/session.ts`: localStorage key `"zoryx:staff-session"`, stored shape `{ staff: {id, name, username, role, kitchenId}, token }`. `getStoredSession()` wraps `JSON.parse` in try/catch, returning `null` on any failure.
+`src/auth/session.ts` (phase 2): **one session per role group** instead of one per browser. localStorage keys `zoryx:staff-session:admin` (SUPER_ADMIN, POS_ADMIN, ONLINE_ADMIN), `zoryx:staff-session:taker` (ORDER_TAKER) and `zoryx:staff-session:kitchen` (KITCHEN); stored shape `{ staff: {id, name, username, role, kitchenId}, token }`. Each tab works in one slot, chosen once when the page loads by `slotForUrl`: `/kitchen-display` → kitchen (admin when no kitchen session exists), `/take-order` and `/my-orders` → taker, `/login?slot=<slot>` → that slot, anything else → admin. Login (`setStoredSession`) writes the slot of the role that logged in and switches the tab to it; logout, a 401 and a socket auth refusal clear only this tab's slot (`forceLogout` reloads `/login?slot=<slot>` so the tab stays in its slot). The axios client and every socket use the active slot's token. `AuthContext` follows `storage` events for its own slot only, so two tabs of the same role agree and other roles' tabs are untouched. The old single key `zoryx:staff-session` is moved into its role's slot on first load. Result: one Chrome window can hold the owner (tab 1), a waiter at `/take-order` (tab 2) and kitchen staff at `/kitchen-display` (tab 3), all live. `getStoredSession()` wraps `JSON.parse` in try/catch, returning `null` on any failure.
 
 **Phase 1:** the 401 handling now lives in `forceLogout()` (`auth/session.ts`: clear the stored session, dispatch `auth:logout`, go to `/login`), shared by the axios interceptor below and by `socket/client.ts`, so a socket refused or revoked for auth reasons logs out exactly the same way (see §7.6).
 

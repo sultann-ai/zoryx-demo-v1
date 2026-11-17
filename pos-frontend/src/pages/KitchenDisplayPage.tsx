@@ -9,14 +9,14 @@ import type {
   OrderItemsGoneSocketPayload,
   UpdatedOrderItemSocketPayload,
 } from "../api/kitchenQueue";
-import { kitchenQueueApi } from "../api/kitchenQueue";
+import { ALL_KITCHENS, kitchenQueueApi } from "../api/kitchenQueue";
 import type { OrderItemStatus } from "../api/orders";
 import { useAuth } from "../context/AuthContext";
 import { useKitchenQueue } from "../hooks/useKitchenQueue";
 import { useKitchens } from "../hooks/useKitchens";
 import { itemNoteLines } from "../lib/lineNotes";
 import { connectSocket } from "../socket/client";
-import { Button, StatusBadge, accentBgClassForStatus } from "../components/ui";
+import { Button, Select, StatusBadge, accentBgClassForStatus } from "../components/ui";
 
 const NEXT_STATUS: Record<OrderItemStatus, OrderItemStatus | null> = {
   PENDING: "PREPARING",
@@ -43,19 +43,50 @@ function withoutId(ids: ReadonlySet<string>, id: string): ReadonlySet<string> {
   return next;
 }
 
+// The admin's last pick, per browser (a convenience only — "All kitchens" when there's none).
+const PICKED_KITCHEN_KEY = "zoryx:kds-kitchen";
+
+function readPickedKitchen(): string {
+  try {
+    return localStorage.getItem(PICKED_KITCHEN_KEY) ?? ALL_KITCHENS;
+  } catch {
+    return ALL_KITCHENS;
+  }
+}
+
+function savePickedKitchen(value: string): void {
+  try {
+    localStorage.setItem(PICKED_KITCHEN_KEY, value);
+  } catch {
+    // Not remembered: the screen still works.
+  }
+}
+
 export function KitchenDisplayPage() {
   const { staff, token, logout } = useAuth();
-  // Never let the user pick a kitchen — this account's own token.kitchenId is the
-  // only queue it's allowed to see (the backend enforces this too, 403ing a KITCHEN
-  // request for any other kitchenId).
-  const kitchenId = staff?.kitchenId ?? null;
-
-  const queryClient = useQueryClient();
-  const { data: queueItems, isLoading, isError } = useKitchenQueue(kitchenId);
+  // A KITCHEN account never picks: its own token.kitchenId is the only queue it may see (the backend
+  // 403s any other). SUPER_ADMIN/POS_ADMIN pick one kitchen or "All kitchens".
+  const isKitchenAccount = staff?.role === "KITCHEN";
+  const [storedPick, setPickedKitchen] = useState(readPickedKitchen);
   // The login record only carries kitchenId, not the name. The list endpoint is
   // open to any signed-in staff, so look this account's own kitchen up in it.
   const { data: kitchens } = useKitchens();
-  const kitchenName = kitchens?.find((kitchen) => kitchen.id === kitchenId)?.name;
+  const activeKitchens = (kitchens ?? []).filter((kitchen) => kitchen.isActive);
+  // A remembered kitchen that has since been deactivated or deleted falls back to "All kitchens".
+  const pickedKitchen =
+    storedPick === ALL_KITCHENS || !kitchens || activeKitchens.some((kitchen) => kitchen.id === storedPick)
+      ? storedPick
+      : ALL_KITCHENS;
+  const kitchenId = isKitchenAccount ? (staff?.kitchenId ?? null) : pickedKitchen;
+  const isAllKitchens = kitchenId === ALL_KITCHENS;
+
+  const queryClient = useQueryClient();
+  const { data: queueItems, isLoading, isError } = useKitchenQueue(kitchenId);
+  const kitchenNameById = new Map((kitchens ?? []).map((kitchen) => [kitchen.id, kitchen.name]));
+  const kitchenName = isAllKitchens ? "All kitchens" : kitchenId ? kitchenNameById.get(kitchenId) : undefined;
+  // The socket rooms this screen listens to: its kitchen, or every active kitchen for "All kitchens".
+  const rooms = isAllKitchens ? activeKitchens.map((kitchen) => `kitchen:${kitchen.id}`) : kitchenId ? [`kitchen:${kitchenId}`] : [];
+  const roomsKey = rooms.join(",");
   const [items, setItems] = useState<KitchenQueueItem[]>([]);
   const [actionError, setActionError] = useState<string | null>(null);
   // "reconnecting" while the socket is down; it reconnects by itself and the queue is refetched then.
@@ -77,23 +108,25 @@ export function KitchenDisplayPage() {
   }, [queueItems]);
 
   useEffect(() => {
-    if (!kitchenId || !token) {
+    if (!kitchenId || !token || roomsKey === "") {
       return;
     }
 
     const socket: Socket = connectSocket(token);
-    const room = `kitchen:${kitchenId}`;
+    const joinRooms = roomsKey.split(",");
     let hasConnectedBefore = false;
 
     // Every (re)connect is a new server-side socket with no rooms: join again each time, and after a
     // reconnect refetch the queue so nothing missed while offline stays missing (or stays on screen).
     // An auth refusal logs out (socket/client.ts); anything else just keeps retrying by itself.
     function handleConnect() {
-      socket.emit("join", room, (result: { ok: boolean; error?: string }) => {
-        if (!result.ok) {
-          setActionError(result.error ?? "Failed to join the live kitchen queue.");
-        }
-      });
+      for (const room of joinRooms) {
+        socket.emit("join", room, (result: { ok: boolean; error?: string }) => {
+          if (!result.ok) {
+            setActionError(result.error ?? "Failed to join the live kitchen queue.");
+          }
+        });
+      }
       setConnection("live");
       if (hasConnectedBefore) {
         void queryClient.invalidateQueries({ queryKey: ["kitchen-queue", kitchenId] });
@@ -133,7 +166,7 @@ export function KitchenDisplayPage() {
     }
 
     function handleUpdatedItem(payload: UpdatedOrderItemSocketPayload) {
-      if (payload.kitchenId !== kitchenId) {
+      if (kitchenId !== ALL_KITCHENS && payload.kitchenId !== kitchenId) {
         return;
       }
       setItems((prev) => prev.map((row) => (row.id === payload.id ? { ...row, status: payload.status } : row)));
@@ -166,7 +199,7 @@ export function KitchenDisplayPage() {
       socket.off("connect_error", handleConnectionLost);
       socket.disconnect();
     };
-  }, [kitchenId, token, queryClient]);
+  }, [kitchenId, token, roomsKey, queryClient]);
 
   async function handleAdvance(item: KitchenQueueItem) {
     const nextStatus = NEXT_STATUS[item.status];
@@ -183,6 +216,14 @@ export function KitchenDisplayPage() {
     }
   }
 
+  function handlePickKitchen(value: string) {
+    setPickedKitchen(value);
+    savePickedKitchen(value);
+    setItems([]);
+    setNoteUpdatedIds(new Set());
+    setActionError(null);
+  }
+
   if (!kitchenId) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-ink px-6 text-center">
@@ -193,11 +234,33 @@ export function KitchenDisplayPage() {
 
   return (
     <div className="flex min-h-screen flex-col bg-ink">
-      <header className="flex items-center justify-between gap-4 border-b border-white/10 px-4 py-4 sm:px-8 sm:py-5">
+      <header className="flex flex-wrap items-center justify-between gap-4 border-b border-white/10 px-4 py-4 sm:px-8 sm:py-5">
         <h1 className="font-heading text-title font-semibold text-white">{kitchenName ?? "Kitchen"}</h1>
-        <Button variant="inverse" onClick={logout}>
-          Log out
-        </Button>
+        {isKitchenAccount ? (
+          <Button variant="inverse" onClick={logout}>
+            Log out
+          </Button>
+        ) : (
+          // An owner/manager watching the kitchens: pick which, and hand this tab to kitchen staff if
+          // needed. No Log out here — it would end the admin session in every admin tab of this browser.
+          <div className="flex flex-wrap items-center gap-3">
+            <label htmlFor="kds-kitchen" className="sr-only">
+              Kitchen
+            </label>
+            <Select id="kds-kitchen" value={pickedKitchen} onChange={(event) => handlePickKitchen(event.target.value)} className="w-56">
+              <option value={ALL_KITCHENS}>All kitchens</option>
+              {activeKitchens.map((kitchen) => (
+                <option key={kitchen.id} value={kitchen.id}>
+                  {kitchen.name}
+                </option>
+              ))}
+            </Select>
+            <span className="text-body text-white/70 max-sm:hidden">{staff?.name}</span>
+            <Button variant="inverse" onClick={() => window.location.assign("/login?slot=kitchen")}>
+              Kitchen staff login
+            </Button>
+          </div>
+        )}
       </header>
 
       {/* A system-level alert, not a routine per-item status — unlike the
@@ -245,6 +308,11 @@ export function KitchenDisplayPage() {
                       <span className="text-card-head font-semibold text-ink sm:text-title">
                         Order #{item.order.orderNumber}
                         {item.order.diningArea ? ` — ${item.order.diningArea.name}` : ""}
+                        {isAllKitchens && (
+                          <span className="block text-section font-medium text-ink-muted">
+                            {kitchenNameById.get(item.kitchenId) ?? "Kitchen"}
+                          </span>
+                        )}
                       </span>
                       <StatusBadge status={item.status} size="lg" />
                     </div>
