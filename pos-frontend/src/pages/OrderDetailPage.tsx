@@ -54,6 +54,7 @@ import { ORDER_SOURCE_LABEL, orderTypeLabel, PAYMENT_METHOD_LABEL } from "../lib
 import { LINE_NOTE_MAX_LENGTH, normalizeLineNote } from "../lib/lineNotes";
 import { AddItemPicker } from "./orderDetail/AddItemPicker";
 import { EditableLineNote } from "./orderDetail/EditableLineNote";
+import { OrderHistory } from "./orderDetail/OrderHistory";
 
 const CLOSED_STATUSES = new Set(["CANCELLED", "COMPLETED"]);
 // An accepted order that hasn't been handed over yet — the only ones "Mark delivered" applies to.
@@ -996,6 +997,8 @@ export function OrderDetailPage() {
           </FormActions>
         </form>
       </Card>
+
+      <OrderHistory orderId={order.id} orderUpdatedAt={order.updatedAt} />
     </div>
   );
 }

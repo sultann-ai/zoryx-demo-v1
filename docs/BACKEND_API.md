@@ -62,7 +62,7 @@ Orders (POS) (/api/pos/orders) — POS_ADMIN/SUPER_ADMIN (item-status also KITCH
 GET /?businessDayId=&status=&source=&diningAreaId=&export=xlsx
 POST / {type, paymentMethod, diningAreaId?, items: [{menuItemId, quantity, notes?}], deals?: [{dealId, quantity, notes?}]}
 notes: per-line kitchen note — trimmed, max 100 chars, blank = none (400 if longer)
-GET /:id · PATCH /:id/cancel {cancelledReason} · PATCH /:id/items/:itemId/status {status: PENDING|PREPARING|READY|SERVED}
+GET /:id · GET /:id/events (audit trail: [{type, reason, before, after, createdAt, actorName}]) · PATCH /:id/cancel {cancelledReason} · PATCH /:id/items/:itemId/status {status: PENDING|PREPARING|READY|SERVED}
 PATCH /:id/items/:itemId/notes {notes: string|null} · PATCH /:id/deal-lines/:dealLineId/notes {notes: string|null} — order not cancelled/completed/awaiting reception/scheduled; pushes order-item:note-updated to the kitchen(s)
 Scheduled orders: POST / with scheduledFor (ISO with zone, future, ≤ 24h) → status SCHEDULED, on hold (no Incoming, kitchen, stock, emit); released to AWAITING_RECEPTION automatically (job every 30s + on startup), exactly once
 GET /scheduled · POST /:id/release · PATCH /:id/schedule {scheduledFor} · PUT /:id/scheduled-items {items, deals?} · POST /:id/cancel-scheduled {reason?} — 409 once no longer SCHEDULED

@@ -1,5 +1,6 @@
-import { PaymentStatus, Prisma } from "../../../generated/prisma/client";
+import { OrderEventType, PaymentStatus, Prisma } from "../../../generated/prisma/client";
 import { prisma } from "../../config/prisma";
+import { money, recordOrderEvent } from "../order/orderEvents";
 
 export class OrderNotFoundError extends Error {}
 export class PaymentNotAwaitingVerificationError extends Error {}
@@ -27,14 +28,24 @@ async function requireAwaitingVerification(orderId: string) {
 // CONFIRMED here would drop it out of the inbox and into the kitchen queue with no stock deduction.
 // Accepting (POST /orders/:id/accept) is the only thing that moves an order on.
 export async function verifyPayment(orderId: string, paymentVerifiedById: string) {
-  await requireAwaitingVerification(orderId);
+  const existing = await requireAwaitingVerification(orderId);
 
-  return prisma.order.update({
-    where: { id: orderId },
-    data: {
-      paymentStatus: PaymentStatus.VERIFIED,
-      paymentVerifiedById,
-    },
+  return prisma.$transaction(async (tx) => {
+    const order = await tx.order.update({
+      where: { id: orderId },
+      data: {
+        paymentStatus: PaymentStatus.VERIFIED,
+        paymentVerifiedById,
+      },
+    });
+    await recordOrderEvent(tx, {
+      orderId,
+      actorId: paymentVerifiedById,
+      type: OrderEventType.PAYMENT_MARKED,
+      before: { paymentStatus: existing.paymentStatus },
+      after: { paymentStatus: PaymentStatus.VERIFIED, totalAmount: money(order.totalAmount) },
+    });
+    return order;
   });
 }
 

@@ -86,6 +86,12 @@ orderRouter.get(
   requireRole(StaffRole.POS_ADMIN, StaffRole.SUPER_ADMIN, StaffRole.ONLINE_ADMIN),
   orderController.getPaymentProof,
 );
+orderRouter.get(
+  "/:id/events",
+  requireAuth,
+  requireRole(StaffRole.POS_ADMIN, StaffRole.SUPER_ADMIN),
+  orderController.listOrderEvents,
+);
 orderRouter.post(
   "/:id/delivered",
   requireAuth,

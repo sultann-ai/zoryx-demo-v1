@@ -84,6 +84,19 @@ enum OrderChangeStatus {
   REJECTED
 }
 
+// What an OrderEvent records. Every money- or trust-relevant action on an order writes one, in
+// the same transaction as the change itself (see order/orderEvents.ts).
+enum OrderEventType {
+  CANCELLED
+  DISCOUNT_SET
+  PAYMENT_MARKED
+  PAYMENT_UNMARKED
+  ITEM_REMOVED
+  ITEM_ADDED
+  ACCEPTED
+  REJECTED
+}
+
 enum PaymentMethod {
   CASH
   ONLINE
@@ -156,6 +169,7 @@ model StaffUser {
   orderChangesRequested OrderChange[]          @relation("OrderChangesRequested")
   orderChangesReviewed  OrderChange[]          @relation("OrderChangesReviewed")
   mediaUploaded         MediaAsset[]
+  orderEvents           OrderEvent[]           @relation("OrderEventActor")
 
   @@index([role])
 }
@@ -526,6 +540,7 @@ model Order {
   dealLines OrderDealLine[]
   changes   OrderChange[]
   clientIp  OrderClientIp?
+  events    OrderEvent[]
 
   @@unique([businessDayId, orderNumber])
   @@index([status])
@@ -557,6 +572,26 @@ model OrderChange {
 
   @@index([orderId, createdAt])
   @@index([status, createdAt])
+}
+
+// The order's audit trail: who did what, when, and why. Append-only — nothing updates or deletes
+// these rows. actorId is null for something no staff member did (a system job, a guest).
+// before/after hold the fields the action changed (money as strings, like the API).
+model OrderEvent {
+  id        String         @id @default(uuid())
+  orderId   String
+  order     Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  actorId   String?
+  actor     StaffUser?     @relation("OrderEventActor", fields: [actorId], references: [id], onDelete: SetNull)
+  type      OrderEventType
+  // At most ORDER_EVENT_REASON_MAX_LENGTH (200) characters.
+  reason    String?        @db.VarChar(200)
+  before    Json?
+  after     Json?
+  createdAt DateTime       @default(now())
+
+  @@index([orderId])
+  @@index([type, createdAt])
 }
 
 model OrderItem {

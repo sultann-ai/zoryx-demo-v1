@@ -17,6 +17,7 @@ import * as businessDayService from "../businessDay/businessDay.service";
 import { normalizePublicCode } from "../guestOrder/publicIds";
 import * as mediaService from "../media/media.service";
 import * as orderService from "./order.service";
+import * as orderEvents from "./orderEvents";
 
 const VALID_ORDER_TYPES = Object.values(OrderType);
 const VALID_PAYMENT_METHODS = Object.values(PaymentMethod);
@@ -352,6 +353,16 @@ export async function getOrder(req: Request, res: Response) {
   res.json(order);
 }
 
+// GET /:id/events — the order's audit trail, oldest first, each with the acting staff member's name.
+export async function listOrderEvents(req: Request, res: Response) {
+  const orderId = req.params.id as string;
+  if (!(await orderService.getOrderSource(orderId))) {
+    res.status(404).json({ error: "Order not found" });
+    return;
+  }
+  res.json(await orderEvents.listOrderEvents(orderId));
+}
+
 export async function cancelOrder(req: Request, res: Response) {
   if (!req.staff) {
     res.status(401).json({ error: "Not authenticated" });
@@ -387,7 +398,7 @@ export async function cancelOrder(req: Request, res: Response) {
   }
 
   try {
-    const order = await orderService.cancelOrder(req.params.id as string, cancelledReason.trim());
+    const order = await orderService.cancelOrder(req.params.id as string, cancelledReason.trim(), req.staff.id);
     res.json(order);
   } catch (error) {
     if (orderService.isNotFoundError(error)) {
@@ -773,6 +784,7 @@ export async function updateSubmission(req: Request, res: Response) {
       ...(notes !== undefined ? { notes } : {}),
       ...(paymentMethod !== undefined ? { paymentMethod } : {}),
       ...(discountDecimal !== undefined ? { discount: discountDecimal } : {}),
+      actorId: req.staff.id,
     });
     res.json(order);
   } catch (error) {
@@ -900,8 +912,12 @@ export async function markDelivered(req: Request, res: Response) {
 // POST /:id/not-collected — an accepted online pickup order the customer never came for: cancelled, and a
 // strike against the phone. 409 for anything else (a delivery order, or one that is not an accepted open order).
 export async function markNotCollected(req: Request, res: Response) {
+  if (!req.staff) {
+    res.status(401).json({ error: "Not authenticated" });
+    return;
+  }
   try {
-    res.json(await orderService.markOrderNotCollected(req.params.id as string));
+    res.json(await orderService.markOrderNotCollected(req.params.id as string, req.staff.id));
   } catch (error) {
     if (error instanceof orderService.OrderNotFoundError) {
       res.status(404).json({ error: "Order not found" });
@@ -973,7 +989,7 @@ export async function rejectOrder(req: Request, res: Response) {
   }
 
   try {
-    const order = await orderService.rejectOrder(req.params.id as string, rejectInput);
+    const order = await orderService.rejectOrder(req.params.id as string, rejectInput, req.staff.id);
     res.json(order);
   } catch (error) {
     if (error instanceof orderService.OrderNotFoundError) {
@@ -989,6 +1005,11 @@ export async function rejectOrder(req: Request, res: Response) {
 }
 
 export async function updatePaymentStatus(req: Request, res: Response) {
+  if (!req.staff) {
+    res.status(401).json({ error: "Not authenticated" });
+    return;
+  }
+
   const { paymentStatus, discount, paidAmount } = req.body ?? {};
 
   if (!isOneOf(paymentStatus, VALID_QUICK_PAYMENT_STATUSES)) {
@@ -1018,6 +1039,7 @@ export async function updatePaymentStatus(req: Request, res: Response) {
     const order = await orderService.updatePaymentStatus(req.params.id as string, paymentStatus, {
       ...(discountDecimal !== undefined ? { discount: discountDecimal } : {}),
       ...(paidAmountDecimal !== undefined ? { paidAmount: paidAmountDecimal } : {}),
+      actorId: req.staff.id,
     });
     res.json(order);
   } catch (error) {
@@ -1380,6 +1402,10 @@ export async function updateScheduledItems(req: Request, res: Response) {
 const SCHEDULED_CANCEL_REASON_MAX_LENGTH = 200;
 
 export async function cancelScheduledOrder(req: Request, res: Response) {
+  if (!req.staff) {
+    res.status(401).json({ error: "Not authenticated" });
+    return;
+  }
   const { reason } = req.body ?? {};
   if (reason !== undefined && typeof reason !== "string") {
     res.status(400).json({ error: "reason must be a string" });
@@ -1394,6 +1420,7 @@ export async function cancelScheduledOrder(req: Request, res: Response) {
     const order = await orderService.cancelScheduledOrder(
       req.params.id as string,
       trimmed.length > 0 ? trimmed : "Scheduled order cancelled before release",
+      req.staff.id,
     );
     res.json(order);
   } catch (error) {

@@ -115,6 +115,29 @@ describe("POST /api/pos/orders/:id/not-collected", () => {
   });
 });
 
+describe("GET /api/pos/orders/:id/events", () => {
+  const path = "/api/pos/orders/some-id/events";
+
+  it("needs a token", async () => {
+    expect((await call("GET", path)).status).toBe(401);
+  });
+
+  it("is open to POS_ADMIN and SUPER_ADMIN only", async () => {
+    state.orderRow = { source: "POS" };
+    for (const role of ["POS_ADMIN", "SUPER_ADMIN"]) {
+      expect((await call("GET", path, role)).status, role).toBe(200);
+    }
+    for (const role of ["ONLINE_ADMIN", "ORDER_TAKER", "KITCHEN"]) {
+      expect((await call("GET", path, role)).status, role).toBe(403);
+    }
+  });
+
+  it("is a 404 for an unknown order", async () => {
+    state.orderRow = null;
+    expect((await call("GET", path, "SUPER_ADMIN")).status).toBe(404);
+  });
+});
+
 describe("GET /api/pos/orders/:id/payment-proof", () => {
   const path = "/api/pos/orders/some-id/payment-proof";
 

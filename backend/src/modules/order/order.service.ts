@@ -7,12 +7,14 @@ import {
   PaymentStatus,
   OrderChangeKind,
   OrderChangeStatus,
+  OrderEventType,
   Prisma,
 } from "../../../generated/prisma/client";
 import { prisma } from "../../config/prisma";
 import { getIO } from "../../config/socket";
 import { computeOrderTotal } from "../../common/orderTotals";
 import * as inventoryService from "../inventory/inventory.service";
+import { money, recordOrderEvent } from "./orderEvents";
 
 export class NoActiveBusinessDayError extends Error {}
 
@@ -978,6 +980,16 @@ export async function createOrder(input: CreateOrderInput): Promise<OrderWithIte
       });
     }
 
+    if (discount.greaterThan(0) && input.placedByStaffId !== undefined) {
+      await recordOrderEvent(tx, {
+        orderId: createdOrder.id,
+        actorId: input.placedByStaffId,
+        type: OrderEventType.DISCOUNT_SET,
+        before: { discount: money(new Prisma.Decimal(0)), totalAmount: money(totalAmount.plus(discount)) },
+        after: { discount: money(discount), totalAmount: money(totalAmount) },
+      });
+    }
+
     // Re-fetch when deal lines were created so the returned order.items includes the
     // exploded rows too — the initial create's `include` only captured the plain items.
     return pendingDealLines.length > 0
@@ -1111,14 +1123,37 @@ function emitOrderStatusToTaker(order: Pick<OrderWithItems, "id" | "orderNumber"
   );
 }
 
-export async function cancelOrder(id: string, cancelledReason: string): Promise<OrderWithItems> {
-  const order = await prisma.order.update({
-    where: { id },
-    data: { status: OrderStatus.CANCELLED, cancelledReason },
-    include: orderInclude,
+export async function cancelOrder(id: string, cancelledReason: string, actorId: string): Promise<OrderWithItems> {
+  const order = await prisma.$transaction(async (tx) => {
+    const existing = await tx.order.findUniqueOrThrow({ where: { id } });
+    const updated = await tx.order.update({
+      where: { id },
+      data: { status: OrderStatus.CANCELLED, cancelledReason },
+      include: orderInclude,
+    });
+    await recordOrderEvent(tx, {
+      orderId: id,
+      actorId,
+      type: OrderEventType.CANCELLED,
+      reason: cancelledReason,
+      before: cancelSnapshot(existing),
+      after: { status: OrderStatus.CANCELLED },
+    });
+    return updated;
   });
   emitOrderStatusToTaker(order);
   return order;
+}
+
+// What a CANCELLED event records about the order just before it was cancelled. `paid` is what
+// reports read as "cancelled after payment".
+function cancelSnapshot(order: { status: OrderStatus; paymentStatus: PaymentStatus; totalAmount: Prisma.Decimal }) {
+  return {
+    status: order.status,
+    paymentStatus: order.paymentStatus,
+    paid: order.paymentStatus === PaymentStatus.VERIFIED,
+    totalAmount: money(order.totalAmount),
+  };
 }
 
 // Used only by an ORDER_TAKER cancelling their own order — must still be AWAITING_RECEPTION
@@ -1133,10 +1168,21 @@ export async function cancelOwnAwaitingOrder(id: string, staffId: string): Promi
   if (order.status !== OrderStatus.AWAITING_RECEPTION) {
     throw new OrderNotAwaitingReceptionError();
   }
-  const updated = await prisma.order.update({
-    where: { id },
-    data: { status: OrderStatus.CANCELLED, cancelledReason: "Cancelled by the order taker" },
-    include: orderInclude,
+  const updated = await prisma.$transaction(async (tx) => {
+    const cancelled = await tx.order.update({
+      where: { id },
+      data: { status: OrderStatus.CANCELLED, cancelledReason: "Cancelled by the order taker" },
+      include: orderInclude,
+    });
+    await recordOrderEvent(tx, {
+      orderId: id,
+      actorId: staffId,
+      type: OrderEventType.CANCELLED,
+      reason: "Cancelled by the order taker",
+      before: cancelSnapshot(order),
+      after: { status: OrderStatus.CANCELLED },
+    });
+    return cancelled;
   });
   emitSafely(() => getIO().to("pos-admin").emit("order:updated", { orderId: updated.id, orderNumber: updated.orderNumber }));
   emitOrderStatusToTaker(updated);
@@ -1242,6 +1288,14 @@ export async function reviewOrderChange(changeId: string, reviewerId: string, ap
       await tx.order.update({
         where: { id: order.id },
         data: { status: OrderStatus.CANCELLED, cancelledReason: "Cancellation approved by reception" },
+      });
+      await recordOrderEvent(tx, {
+        orderId: order.id,
+        actorId: reviewerId,
+        type: OrderEventType.CANCELLED,
+        reason: change.reason ?? "Cancellation approved by reception",
+        before: cancelSnapshot(order),
+        after: { status: OrderStatus.CANCELLED },
       });
       return tx.orderChange.update({
         where: { id: changeId },
@@ -1502,6 +1556,8 @@ export interface UpdateSubmissionInput {
   // POS_ADMIN/SUPER_ADMIN only — checked by the controller before this is ever set.
   paymentMethod?: PaymentMethod;
   discount?: Prisma.Decimal;
+  // Who made the edit — recorded on the DISCOUNT_SET event when the discount changes.
+  actorId?: string;
 }
 
 // Replaces an AWAITING_RECEPTION order's contents wholesale (delete-then-recreate, unlike
@@ -1586,6 +1642,16 @@ async function replaceOrderContents(
         items: { create: orderItemsCreateData },
       },
     });
+
+    if (!discount.equals(existing.discount)) {
+      await recordOrderEvent(tx, {
+        orderId,
+        actorId: input.actorId ?? null,
+        type: OrderEventType.DISCOUNT_SET,
+        before: { discount: money(existing.discount), totalAmount: money(existing.totalAmount) },
+        after: { discount: money(discount), totalAmount: money(totalAmount) },
+      });
+    }
 
     for (const line of pendingDealLines) {
       const dealOrderLine = await tx.orderDealLine.create({
@@ -1744,6 +1810,32 @@ export async function acceptOrder(orderId: string, acceptedById: string, input: 
       items: existing.items.map((item) => ({ menuItemId: item.menuItemId, quantity: item.quantity })),
     });
 
+    await recordOrderEvent(tx, {
+      orderId,
+      actorId: acceptedById,
+      type: OrderEventType.ACCEPTED,
+      before: { status: existing.status },
+      after: { status: nextStatus, paymentMethod: updated.paymentMethod },
+    });
+    if (input.discount !== undefined && totalAmount !== undefined && !input.discount.equals(existing.discount)) {
+      await recordOrderEvent(tx, {
+        orderId,
+        actorId: acceptedById,
+        type: OrderEventType.DISCOUNT_SET,
+        before: { discount: money(existing.discount), totalAmount: money(existing.totalAmount) },
+        after: { discount: money(input.discount), totalAmount: money(totalAmount) },
+      });
+    }
+    if (isOnlinePaid && existing.paymentStatus !== PaymentStatus.VERIFIED) {
+      await recordOrderEvent(tx, {
+        orderId,
+        actorId: acceptedById,
+        type: OrderEventType.PAYMENT_MARKED,
+        before: { paymentStatus: existing.paymentStatus },
+        after: { paymentStatus: PaymentStatus.VERIFIED, totalAmount: money(updated.totalAmount) },
+      });
+    }
+
     return updated;
   });
 
@@ -1786,7 +1878,7 @@ export function parseRejectInput(raw: unknown): RejectOrderInput {
 
 // Reception's "no, send it back." Nothing to restock — an AWAITING_RECEPTION order never
 // deducted inventory in the first place.
-export async function rejectOrder(orderId: string, input: RejectOrderInput): Promise<OrderWithItems> {
+export async function rejectOrder(orderId: string, input: RejectOrderInput, actorId: string): Promise<OrderWithItems> {
   const existing = await prisma.order.findUnique({ where: { id: orderId } });
   if (!existing) {
     throw new OrderNotFoundError();
@@ -1795,14 +1887,25 @@ export async function rejectOrder(orderId: string, input: RejectOrderInput): Pro
     throw new OrderNotAwaitingReceptionError();
   }
 
-  const order = await prisma.order.update({
-    where: { id: orderId },
-    data: {
-      status: OrderStatus.CANCELLED,
-      cancelledReason: input.reason,
-      ...(input.paymentRejected ? { paymentStatus: PaymentStatus.REJECTED } : {}),
-    },
-    include: orderInclude,
+  const order = await prisma.$transaction(async (tx) => {
+    const rejected = await tx.order.update({
+      where: { id: orderId },
+      data: {
+        status: OrderStatus.CANCELLED,
+        cancelledReason: input.reason,
+        ...(input.paymentRejected ? { paymentStatus: PaymentStatus.REJECTED } : {}),
+      },
+      include: orderInclude,
+    });
+    await recordOrderEvent(tx, {
+      orderId,
+      actorId,
+      type: OrderEventType.REJECTED,
+      reason: input.reason,
+      before: { status: existing.status, paymentStatus: existing.paymentStatus },
+      after: { status: rejected.status, paymentStatus: rejected.paymentStatus },
+    });
+    return rejected;
   });
 
   emitSafely(() => {
@@ -1864,8 +1967,11 @@ export class OrderNotCollectableError extends Error {
 
 export const NOT_COLLECTED_REASON = "Not collected";
 
-export async function markOrderNotCollected(orderId: string): Promise<OrderWithItems> {
-  const existing = await prisma.order.findUnique({ where: { id: orderId }, select: { status: true, source: true, type: true } });
+export async function markOrderNotCollected(orderId: string, actorId: string): Promise<OrderWithItems> {
+  const existing = await prisma.order.findUnique({
+    where: { id: orderId },
+    select: { status: true, source: true, type: true, paymentStatus: true, totalAmount: true },
+  });
   if (!existing) {
     throw new OrderNotFoundError();
   }
@@ -1876,9 +1982,22 @@ export async function markOrderNotCollected(orderId: string): Promise<OrderWithI
     throw new OrderNotCollectableError("STATUS", existing.status);
   }
   // Conditional on the status we just read, so a concurrent delivery can't be overwritten.
-  const updated = await prisma.order.updateMany({
-    where: { id: orderId, status: { in: DELIVERABLE_STATUSES } },
-    data: { status: OrderStatus.CANCELLED, cancelledReason: NOT_COLLECTED_REASON, notCollectedAt: new Date() },
+  const updated = await prisma.$transaction(async (tx) => {
+    const result = await tx.order.updateMany({
+      where: { id: orderId, status: { in: DELIVERABLE_STATUSES } },
+      data: { status: OrderStatus.CANCELLED, cancelledReason: NOT_COLLECTED_REASON, notCollectedAt: new Date() },
+    });
+    if (result.count > 0) {
+      await recordOrderEvent(tx, {
+        orderId,
+        actorId,
+        type: OrderEventType.CANCELLED,
+        reason: NOT_COLLECTED_REASON,
+        before: cancelSnapshot(existing),
+        after: { status: OrderStatus.CANCELLED },
+      });
+    }
+    return result;
   });
   if (updated.count === 0) {
     const now = await prisma.order.findUnique({ where: { id: orderId }, select: { status: true } });
@@ -1923,6 +2042,8 @@ export interface UpdatePaymentStatusOptions {
   // How much cash was actually handed over. Snapshotted as-is; change due (paidAmount -
   // totalAmount) is computed on demand wherever it's shown, never stored.
   paidAmount?: Prisma.Decimal;
+  // Who did it — recorded on the PAYMENT_MARKED/PAYMENT_UNMARKED and DISCOUNT_SET events.
+  actorId?: string;
 }
 
 // Quick toggle for the POS cash workflow (pay-after-eating): PENDING <-> VERIFIED, optionally
@@ -1941,6 +2062,10 @@ export async function updatePaymentStatus(
     where: { id },
     select: {
       paymentMethod: true,
+      paymentStatus: true,
+      paidAmount: true,
+      discount: true,
+      totalAmount: true,
       deliveryFee: true,
       items: { select: { subtotal: true } },
       dealLines: { select: { subtotal: true } },
@@ -1973,20 +2098,48 @@ export async function updatePaymentStatus(
   // business data (a discount given), not a payment-confirmation artifact.
   const paidAmount = paymentStatus === PaymentStatus.PENDING ? null : options?.paidAmount;
 
-  const order = await prisma.order.update({
-    where: { id },
-    data: {
-      paymentStatus,
-      ...(options?.discount !== undefined ? { discount: options.discount } : {}),
-      ...(totalAmount !== undefined ? { totalAmount } : {}),
-      ...(paidAmount !== undefined ? { paidAmount } : {}),
-    },
-    include: orderInclude,
+  const actorId = options?.actorId ?? null;
+  const order = await prisma.$transaction(async (tx) => {
+    const updated = await tx.order.update({
+      where: { id },
+      data: {
+        paymentStatus,
+        ...(options?.discount !== undefined ? { discount: options.discount } : {}),
+        ...(totalAmount !== undefined ? { totalAmount } : {}),
+        ...(paidAmount !== undefined ? { paidAmount } : {}),
+      },
+      include: orderInclude,
+    });
+
+    if (options?.discount !== undefined && !options.discount.equals(existing.discount)) {
+      await recordOrderEvent(tx, {
+        orderId: id,
+        actorId,
+        type: OrderEventType.DISCOUNT_SET,
+        before: { discount: money(existing.discount), totalAmount: money(existing.totalAmount) },
+        after: { discount: money(updated.discount), totalAmount: money(updated.totalAmount) },
+      });
+    }
+    if (paymentStatus !== existing.paymentStatus) {
+      await recordOrderEvent(tx, {
+        orderId: id,
+        actorId,
+        type: paymentStatus === PaymentStatus.VERIFIED ? OrderEventType.PAYMENT_MARKED : OrderEventType.PAYMENT_UNMARKED,
+        before: { paymentStatus: existing.paymentStatus, paidAmount: money(existing.paidAmount) },
+        after: { paymentStatus, paidAmount: money(updated.paidAmount), totalAmount: money(updated.totalAmount) },
+      });
+    }
+    return updated;
   });
   return order;
 }
 
 const CLOSED_ORDER_STATUSES = new Set<OrderStatus>([OrderStatus.CANCELLED, OrderStatus.COMPLETED]);
+
+// "2 × Zinger Burger (Large)" — how an item line reads in its audit event.
+function describeLine(item: { quantity: number; variantLabel: string | null; menuItem: { name: string } }): string {
+  return `${item.quantity} × ${item.menuItem.name}${item.variantLabel ? ` (${item.variantLabel})` : ""}`;
+}
 
 export interface AddOrderItemsInput {
   items: CreateOrderItemInput[];
@@ -2075,9 +2228,18 @@ export async function addOrderItems(orderId: string, input: AddOrderItemsInput):
       created.push(row);
     }
 
-    await tx.order.update({
+    const totals = await tx.order.update({
       where: { id: orderId },
       data: { totalAmount: { increment: addedTotal } },
+      select: { totalAmount: true },
+    });
+
+    await recordOrderEvent(tx, {
+      orderId,
+      actorId: input.performedById,
+      type: OrderEventType.ITEM_ADDED,
+      before: { totalAmount: money(totals.totalAmount.minus(addedTotal)) },
+      after: { totalAmount: money(totals.totalAmount), items: created.map(describeLine) },
     });
 
     await inventoryService.deductForOrderItems(tx, {
@@ -2105,7 +2267,7 @@ export async function addOrderItems(orderId: string, input: AddOrderItemsInput):
 export async function removeOrderItem(orderId: string, itemId: string, performedById: string): Promise<OrderWithItems> {
   const order = await prisma.order.findUnique({
     where: { id: orderId },
-    include: { items: true, dealLines: true },
+    include: { items: { include: { menuItem: { select: { name: true } } } }, dealLines: true },
   });
   if (!order) {
     throw new OrderNotFoundError();
@@ -2137,9 +2299,22 @@ export async function removeOrderItem(orderId: string, itemId: string, performed
   const updatedOrder = await prisma.$transaction(async (tx) => {
     await tx.orderItem.delete({ where: { id: itemId } });
 
-    await tx.order.update({
+    const totals = await tx.order.update({
       where: { id: orderId },
       data: { totalAmount: { decrement: item.subtotal } },
+      select: { totalAmount: true },
+    });
+
+    await recordOrderEvent(tx, {
+      orderId,
+      actorId: performedById,
+      type: OrderEventType.ITEM_REMOVED,
+      before: {
+        item: describeLine(item),
+        subtotal: money(item.subtotal),
+        totalAmount: money(totals.totalAmount.plus(item.subtotal)),
+      },
+      after: { totalAmount: money(totals.totalAmount) },
     });
 
     await inventoryService.restockForOrderItems(tx, {
@@ -2285,6 +2460,8 @@ async function transitionScheduledOrder(
   orderId: string,
   data: Prisma.OrderUpdateManyMutationInput,
   extraWhere: Prisma.OrderWhereInput = {},
+  // Runs inside the same transaction, only when this call made the change (e.g. its audit event).
+  onChanged?: (tx: Prisma.TransactionClient, order: OrderWithItems) => Promise<unknown>,
 ): Promise<{ order: OrderWithItems | null; exists: boolean }> {
   return prisma.$transaction(async (tx) => {
     const result = await tx.order.updateMany({
@@ -2296,6 +2473,7 @@ async function transitionScheduledOrder(
       return { order: null, exists };
     }
     const order = await tx.order.findUniqueOrThrow({ where: { id: orderId }, include: orderInclude });
+    await onChanged?.(tx, order);
     return { order, exists: true };
   });
 }
@@ -2372,11 +2550,21 @@ export function updateScheduledItems(
 // Cancels only if still on hold — never a just-released order by accident (that goes through
 // the normal cancel/reject paths, where reception can see it). Nothing to restock: a
 // scheduled order never deducted anything.
-export async function cancelScheduledOrder(orderId: string, reason: string): Promise<OrderWithItems> {
-  const { order, exists } = await transitionScheduledOrder(orderId, {
-    status: OrderStatus.CANCELLED,
-    cancelledReason: reason,
-  });
+export async function cancelScheduledOrder(orderId: string, reason: string, actorId: string): Promise<OrderWithItems> {
+  const { order, exists } = await transitionScheduledOrder(
+    orderId,
+    { status: OrderStatus.CANCELLED, cancelledReason: reason },
+    {},
+    (tx, cancelled) =>
+      recordOrderEvent(tx, {
+        orderId,
+        actorId,
+        type: OrderEventType.CANCELLED,
+        reason,
+        before: cancelSnapshot({ ...cancelled, status: OrderStatus.SCHEDULED }),
+        after: { status: OrderStatus.CANCELLED },
+      }),
+  );
   if (!order) {
     throw exists ? new OrderNotScheduledError() : new OrderNotFoundError();
   }

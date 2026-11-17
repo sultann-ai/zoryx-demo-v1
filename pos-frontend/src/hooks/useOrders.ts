@@ -30,6 +30,17 @@ export function useOrder(id: string, options?: { enabled?: boolean }) {
   });
 }
 
+// Keyed on the order's updatedAt, so every change to the order (which all go through its
+// detail cache) refetches the history without each mutation having to invalidate it.
+export function useOrderEvents(id: string, orderUpdatedAt: string | undefined) {
+  return useQuery({
+    queryKey: ["orders", "events", id, orderUpdatedAt],
+    queryFn: () => ordersApi.listEvents(id),
+    enabled: id !== "" && orderUpdatedAt !== undefined,
+    placeholderData: (previous) => previous,
+  });
+}
+
 export function useCreateOrder() {
   const queryClient = useQueryClient();
   return useMutation({

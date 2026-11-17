@@ -313,7 +313,34 @@ export interface UpdateScheduledItemsInput {
   deals?: CreateOrderInput["deals"];
 }
 
+export type OrderEventType =
+  | "CANCELLED"
+  | "DISCOUNT_SET"
+  | "PAYMENT_MARKED"
+  | "PAYMENT_UNMARKED"
+  | "ITEM_REMOVED"
+  | "ITEM_ADDED"
+  | "ACCEPTED"
+  | "REJECTED";
+
+// One row of an order's audit trail (GET /orders/:id/events). before/after hold only the fields
+// the action changed; money in them is a string, like everywhere else in the API.
+export interface OrderEvent {
+  id: string;
+  type: OrderEventType;
+  reason: string | null;
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+  createdAt: string;
+  actorId: string | null;
+  actorName: string | null;
+}
+
 export const ordersApi = {
+  listEvents: async (id: string): Promise<OrderEvent[]> => {
+    const { data } = await apiClient.get<OrderEvent[]>(`/api/pos/orders/${id}/events`);
+    return data;
+  },
   list: async (filter: ListOrdersFilter = {}): Promise<OrderSummary[]> => {
     const { data } = await apiClient.get<OrderSummary[]>("/api/pos/orders", { params: filter });
     return data;
