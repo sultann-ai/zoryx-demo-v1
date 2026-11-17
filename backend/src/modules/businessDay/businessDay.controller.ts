@@ -67,7 +67,8 @@ export async function end(req: Request, res: Response) {
   }
 
   if (force !== true) {
-    const orderIds = await businessDayService.getBlockingOrderIds(active.id);
+    const openOrders = await businessDayService.getBlockingOrders(active.id);
+    const orderIds = openOrders.map((order) => order.id);
     // Unpaid orders (open or delivered) aren't in the day's sales: list them, by number and
     // amount, so whoever ends the day anyway does it knowingly.
     const unpaid = await businessDayService.getUnpaidOrders(active.id);
@@ -84,6 +85,7 @@ export async function end(req: Request, res: Response) {
         code: unpaid.orders.length > 0 ? "UNPAID_ORDERS" : "OPEN_ORDERS",
         error: `Cannot end business day: ${problems.join("; ")}`,
         orderIds,
+        openOrders,
         unpaidOrders: unpaid.orders,
         unpaidTotal: unpaid.total,
       });

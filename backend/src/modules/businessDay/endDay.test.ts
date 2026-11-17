@@ -31,7 +31,7 @@ describe("POST /business-day/end with unpaid orders", () => {
 
   it("lists the unpaid orders by number and amount before it lets the day end", async () => {
     vi.spyOn(service, "getActiveBusinessDay").mockResolvedValue({ id: "day-1" } as Awaited<ReturnType<typeof service.getActiveBusinessDay>>);
-    vi.spyOn(service, "getBlockingOrderIds").mockResolvedValue([]);
+    vi.spyOn(service, "getBlockingOrders").mockResolvedValue([]);
     vi.spyOn(service, "getUnpaidOrders").mockResolvedValue({
       orders: [
         { id: "o-7", orderNumber: 7, totalAmount: new Prisma.Decimal(1200), status: "COMPLETED", paymentMethod: "CASH" },

@@ -25,6 +25,7 @@ import {
 } from "../components/ui";
 import { cn } from "../components/ui/cn";
 import { OrderStatusBadge } from "../components/OrderStatusBadge";
+import { COMPLETABLE_STATUSES, CompleteOrderDialog } from "../components/CompleteOrderDialog";
 import { isPickup } from "../lib/orderCustomer";
 import {
   ORDER_SOURCE_LABEL,
@@ -92,6 +93,8 @@ export function OrdersPage() {
   const { data: orders, isLoading, isError } = useOrdersList(filter);
   const paymentStatusMutation = useUpdateOrderPaymentStatus();
   const [paymentError, setPaymentError] = useState<string | null>(null);
+  // The order "Complete" was pressed on (an unpaid one confirms payment first, in the dialog).
+  const [completeOrderId, setCompleteOrderId] = useState<string | null>(null);
 
   const activeFilterCount = Object.keys(filter).length;
   const diningAreaNameById = new Map((diningAreas ?? []).map((area) => [area.id, area.name]));
@@ -122,6 +125,7 @@ export function OrdersPage() {
   return (
     <div className="flex flex-col gap-6">
       <PageHeader title="Orders" />
+      <CompleteOrderDialog orderId={completeOrderId} onClose={() => setCompleteOrderId(null)} />
 
       {isDiningAreasError && (
         <p role="alert" className="text-body text-status-danger-text">
@@ -288,9 +292,16 @@ export function OrdersPage() {
                 <TableCell className="text-numeric">{Number(order.totalAmount).toFixed(2)}</TableCell>
                 <TableCell>{new Date(order.createdAt).toLocaleString()}</TableCell>
                 <TableCell>
-                  <Link to={`/orders/${order.id}`} className={buttonClassName("secondary")}>
-                    View
-                  </Link>
+                  <div className="flex flex-wrap gap-2 max-md:justify-end">
+                    {COMPLETABLE_STATUSES.has(order.status) && (
+                      <Button variant="success" onClick={() => setCompleteOrderId(order.id)}>
+                        Complete
+                      </Button>
+                    )}
+                    <Link to={`/orders/${order.id}`} className={buttonClassName("secondary")}>
+                      View
+                    </Link>
+                  </div>
                 </TableCell>
               </TableRow>
             ))}

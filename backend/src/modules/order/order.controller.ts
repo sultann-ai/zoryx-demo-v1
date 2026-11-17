@@ -964,7 +964,7 @@ export async function acceptOrder(req: Request, res: Response) {
 // COMPLETED. 409 for anything that isn't an accepted, still-open order (never for CANCELLED).
 export async function markDelivered(req: Request, res: Response) {
   try {
-    const order = await orderService.markOrderDelivered(req.params.id as string);
+    const order = await orderService.markOrderDelivered(req.params.id as string, req.staff?.id ?? null);
     res.json(order);
   } catch (error) {
     if (error instanceof orderService.OrderNotFoundError) {
@@ -977,6 +977,33 @@ export async function markDelivered(req: Request, res: Response) {
         error: `This order is ${error.status} and cannot be marked delivered`,
         status: error.status,
       });
+      return;
+    }
+    throw error;
+  }
+}
+
+// POST /:id/complete — finish a paid, accepted (PENDING/CONFIRMED) order of any source and type. Its
+// remaining items are marked SERVED and leave the kitchen screens. 409 NOT_COMPLETABLE for any other
+// status, 409 UNPAID for an order nobody has marked paid (the POS confirms payment first, then retries).
+export async function completeOrder(req: Request, res: Response) {
+  if (!req.staff) {
+    res.status(401).json({ error: "Not authenticated" });
+    return;
+  }
+  try {
+    res.json(await orderService.completeOrder(req.params.id as string, req.staff.id));
+  } catch (error) {
+    if (error instanceof orderService.OrderNotFoundError) {
+      res.status(404).json({ error: "Order not found" });
+      return;
+    }
+    if (error instanceof orderService.OrderNotCompletableError) {
+      res.status(409).json({ code: "NOT_COMPLETABLE", error: error.message, status: error.status });
+      return;
+    }
+    if (error instanceof orderService.OrderUnpaidError) {
+      res.status(409).json({ code: "UNPAID", error: "This order isn't paid yet — confirm the payment first, then complete it" });
       return;
     }
     throw error;

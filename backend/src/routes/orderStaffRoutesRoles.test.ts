@@ -63,6 +63,23 @@ async function call(method: string, path: string, role?: string, body: unknown =
 
 const reaches = (status: number) => status !== 401 && status !== 403;
 
+describe("POST /api/pos/orders/:id/complete", () => {
+  const path = "/api/pos/orders/some-id/complete";
+
+  it("needs a token", async () => {
+    expect((await call("POST", path)).status).toBe(401);
+  });
+
+  it("is open to POS_ADMIN and SUPER_ADMIN only", async () => {
+    for (const role of ["POS_ADMIN", "SUPER_ADMIN"]) {
+      expect(reaches((await call("POST", path, role)).status), role).toBe(true);
+    }
+    for (const role of ["ONLINE_ADMIN", "ORDER_TAKER", "KITCHEN"]) {
+      expect((await call("POST", path, role)).status, role).toBe(403);
+    }
+  });
+});
+
 describe("POST /api/pos/orders/:id/delivered", () => {
   const path = "/api/pos/orders/some-id/delivered";
 

@@ -29,11 +29,27 @@ export function startBusinessDay(openedById: string, label: string) {
 }
 
 export async function getBlockingOrderIds(businessDayId: string): Promise<string[]> {
-  const orders = await prisma.order.findMany({
+  return (await getBlockingOrders(businessDayId)).map((order) => order.id);
+}
+
+// The open orders that stop the day ending, with what the End Day dialog needs to finish each one
+// right there (Complete, or Cancel): number, status, type, payment, amount.
+export function getBlockingOrders(businessDayId: string) {
+  return prisma.order.findMany({
     where: { businessDayId, status: { in: BLOCKING_STATUSES } },
-    select: { id: true },
+    select: {
+      id: true,
+      orderNumber: true,
+      status: true,
+      type: true,
+      source: true,
+      paymentMethod: true,
+      paymentStatus: true,
+      totalAmount: true,
+      diningArea: { select: { name: true } },
+    },
+    orderBy: { orderNumber: "asc" },
   });
-  return orders.map((order) => order.id);
 }
 
 // Accepted orders on this day that nobody has marked paid (salesDefinitions' "unpaid") — they are

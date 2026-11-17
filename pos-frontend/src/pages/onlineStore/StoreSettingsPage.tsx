@@ -11,6 +11,7 @@ import { cleanWhatsappNumber } from "../../lib/whatsapp";
 import { OrderingSwitchCard } from "./OrderingSwitchCard";
 import { OrderTypesCard } from "./OrderTypesCard";
 import { DiscountCapCard } from "./DiscountCapCard";
+import { TakeawayCompleteCard } from "./TakeawayCompleteCard";
 
 type TextKey =
   | "shopNameEn" | "shopNameUr" | "taglineEn" | "taglineUr"
@@ -137,6 +138,8 @@ export function StoreSettingsPage() {
       <OrderTypesCard />
 
       <DiscountCapCard />
+
+      <TakeawayCompleteCard />
 
       {isLoading && <p className="text-body text-ink-muted">Loading settings…</p>}
       {isError && <p className="text-body text-status-danger-text">Could not load the settings.</p>}

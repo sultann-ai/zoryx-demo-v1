@@ -121,6 +121,20 @@ describe("the POS Admin discount cap in site settings", () => {
   });
 });
 
+describe("the takeaway auto-complete switch in site settings", () => {
+  it("can be changed by a SUPER_ADMIN or POS_ADMIN, not an ONLINE_ADMIN", async () => {
+    const body = { autoCompleteTakeawayOnPayment: false };
+    expect((await call("PUT", "/api/pos/site-settings", "ONLINE_ADMIN", body)).status).toBe(403);
+    for (const role of ["SUPER_ADMIN", "POS_ADMIN"]) {
+      expect([401, 403], role).not.toContain((await call("PUT", "/api/pos/site-settings", role, body)).status);
+    }
+  });
+
+  it("must be a boolean", async () => {
+    expect((await call("PUT", "/api/pos/site-settings", "SUPER_ADMIN", { autoCompleteTakeawayOnPayment: "yes" })).status).toBe(400);
+  });
+});
+
 describe("ONLINE_ADMIN can never reach prices or kitchens", () => {
   it("is refused (403) on every existing menu/deal/category write", async () => {
     for (const [method, path] of [

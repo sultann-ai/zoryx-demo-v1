@@ -31,6 +31,15 @@ export async function updateSiteSettings(req: Request, res: Response) {
     res.status(403).json({ error: "Only a Super Admin can change the discount cap" });
     return;
   }
+  // How the till finishes takeaway orders is a POS decision, not the website's.
+  if (
+    "autoCompleteTakeawayOnPayment" in parsed.value &&
+    req.staff?.role !== StaffRole.SUPER_ADMIN &&
+    req.staff?.role !== StaffRole.POS_ADMIN
+  ) {
+    res.status(403).json({ error: "Only a Super Admin or POS Admin can change how takeaway orders are completed" });
+    return;
+  }
   try {
     res.json(await service.updateSiteSettings(parsed.value));
   } catch (error) {

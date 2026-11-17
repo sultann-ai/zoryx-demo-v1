@@ -96,6 +96,8 @@ const SITE_SETTINGS_SPECS: FieldSpecs = {
   tiktokUrl: (value) => parseNullableHttpUrl("tiktokUrl", value),
   // Only a SUPER_ADMIN may change it (checked in the controller).
   maxDiscountPercentPosAdmin: percent("maxDiscountPercentPosAdmin"),
+  // A POS setting (complete a takeaway when it's paid) — SUPER_ADMIN/POS_ADMIN only (controller).
+  autoCompleteTakeawayOnPayment: bool("autoCompleteTakeawayOnPayment"),
 };
 
 export function parseSiteSettingsUpdate(body: Record<string, unknown>) {

@@ -1,4 +1,5 @@
 import axios from "axios";
+import type { OrderSource, OrderStatus, OrderType, PaymentMethod, PaymentStatus } from "./orders";
 
 // Matches the backend's universal error shape ({ error: string }), plus the
 // occasional extra field an endpoint attaches (e.g. business-day/end's orderIds).
@@ -11,6 +12,18 @@ export interface ApiErrorBody {
   // business-day/end's 400: accepted orders nobody marked paid (not in the day's sales).
   unpaidOrders?: { id: string; orderNumber: number; totalAmount: string; status: string }[];
   unpaidTotal?: string;
+  // business-day/end's 400: the open orders blocking it, for the End Day dialog's Complete/Cancel.
+  openOrders?: {
+    id: string;
+    orderNumber: number;
+    status: OrderStatus;
+    type: OrderType;
+    source: OrderSource;
+    paymentMethod: PaymentMethod;
+    paymentStatus: PaymentStatus;
+    totalAmount: string;
+    diningArea: { name: string } | null;
+  }[];
 }
 
 export function getApiErrorBody(error: unknown): ApiErrorBody | undefined {

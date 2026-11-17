@@ -99,6 +99,12 @@ orderRouter.post(
   orderController.markDelivered,
 );
 orderRouter.post(
+  "/:id/complete",
+  requireAuth,
+  requireRole(StaffRole.POS_ADMIN, StaffRole.SUPER_ADMIN),
+  orderController.completeOrder,
+);
+orderRouter.post(
   "/:id/not-collected",
   requireAuth,
   requireRole(StaffRole.POS_ADMIN, StaffRole.SUPER_ADMIN),

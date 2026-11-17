@@ -11,7 +11,6 @@ import {
   useAddOrderItems,
   useAssignOrder,
   useCancelOrder,
-  useMarkOrderDelivered,
   useMarkOrderNotCollected,
   useOrder,
   useReleaseScheduledOrder,
@@ -54,14 +53,15 @@ import { ORDER_SOURCE_LABEL, orderTypeLabel, PAYMENT_METHOD_LABEL } from "../lib
 import { LINE_NOTE_MAX_LENGTH, normalizeLineNote } from "../lib/lineNotes";
 import { AddItemPicker } from "./orderDetail/AddItemPicker";
 import { CancelOrderModal } from "./orderDetail/CancelOrderModal";
-import { DiscountCapHint } from "../components/DiscountCapHint";
+import { COMPLETABLE_STATUSES, CompleteOrderDialog } from "../components/CompleteOrderDialog";
+import { ConfirmPaymentForm } from "../components/ConfirmPaymentForm";
 import { EditableLineNote } from "./orderDetail/EditableLineNote";
 import { OrderHistory } from "./orderDetail/OrderHistory";
 
 const CLOSED_STATUSES = new Set(["CANCELLED", "COMPLETED"]);
 // The only statuses the server lets PATCH /:id/cancel act on (a scheduled order uses cancel-scheduled).
 const CANCELLABLE_STATUSES = new Set(["PENDING", "CONFIRMED", "AWAITING_RECEPTION"]);
-// An accepted order that hasn't been handed over yet — the only ones "Mark delivered" applies to.
+// An accepted order that hasn't been handed over yet — the only ones "Not collected" applies to.
 const DELIVERABLE_STATUSES = new Set(["PENDING", "CONFIRMED", "IN_KITCHEN", "READY"]);
 
 interface PrintFeedback {
@@ -119,9 +119,8 @@ export function OrderDetailPage() {
   const releaseMutation = useReleaseScheduledOrder();
   const navigate = useNavigate();
   const [releaseError, setReleaseError] = useState<string | null>(null);
-  const deliveredMutation = useMarkOrderDelivered();
-  const [isDeliverOpen, setIsDeliverOpen] = useState(false);
-  const [deliverError, setDeliverError] = useState<string | null>(null);
+  const [isReleaseOpen, setIsReleaseOpen] = useState(false);
+  const [isCompleteOpen, setIsCompleteOpen] = useState(false);
   // Pickup only: the customer never came for it.
   const notCollectedMutation = useMarkOrderNotCollected();
   const [isNotCollectedOpen, setIsNotCollectedOpen] = useState(false);
@@ -139,10 +138,8 @@ export function OrderDetailPage() {
   const [addItemNotes, setAddItemNotes] = useState("");
   const [addItemError, setAddItemError] = useState<string | null>(null);
   const [removeItemError, setRemoveItemError] = useState<string | null>(null);
-  const [confirmDiscount, setConfirmDiscount] = useState("0");
-  const [confirmDiscountReason, setConfirmDiscountReason] = useState("");
-  const [confirmPaidAmount, setConfirmPaidAmount] = useState("");
-  const [confirmPaymentError, setConfirmPaymentError] = useState<string | null>(null);
+  const [itemToRemove, setItemToRemove] = useState<OrderItem | null>(null);
+  const [markUnpaidError, setMarkUnpaidError] = useState<string | null>(null);
   const [printFeedback, setPrintFeedback] = useState<PrintFeedback | null>(null);
 
   const hasInitializedAssignForm = useRef(false);
@@ -152,17 +149,6 @@ export function OrderDetailPage() {
       setAssignRiderId(order.riderId ?? "");
       setAssignDiningAreaId(order.diningAreaId ?? "");
       hasInitializedAssignForm.current = true;
-    }
-  }, [order]);
-
-  // Pre-fills with whatever discount the order already has (usually "0") rather than
-  // starting blank, so confirming payment without touching this field can't accidentally
-  // reset a discount that was already set some other way.
-  const hasInitializedConfirmDiscount = useRef(false);
-  useEffect(() => {
-    if (!hasInitializedConfirmDiscount.current && order) {
-      setConfirmDiscount(order.discount);
-      hasInitializedConfirmDiscount.current = true;
     }
   }, [order]);
 
@@ -188,11 +174,10 @@ export function OrderDetailPage() {
   }
 
   const canCancel = CANCELLABLE_STATUSES.has(order.status);
-  // An online order is one the customer is waiting for; once accepted, staff mark it handed over.
   const isOnline = order.source === "ONLINE";
-  const canMarkDelivered = isOnline && DELIVERABLE_STATUSES.has(order.status);
+  // Any accepted, open order — every source and type. An unpaid one goes through Confirm Payment first.
+  const canComplete = COMPLETABLE_STATUSES.has(order.status);
   const pickup = isPickup(order);
-  const deliverLabel = order.type === "DELIVERY" ? "Mark delivered" : "Mark collected";
   // An accepted pickup order can also end as "Not collected" (the same statuses that can be delivered).
   const canMarkNotCollected = pickup && DELIVERABLE_STATUSES.has(order.status);
   const customer = getOrderCustomer(order);
@@ -205,17 +190,6 @@ export function OrderDetailPage() {
   const isScheduled = order.status === "SCHEDULED";
   const canEditItems = !CLOSED_STATUSES.has(order.status) && order.status !== "AWAITING_RECEPTION" && !isScheduled;
 
-  async function handleMarkDelivered() {
-    setDeliverError(null);
-    try {
-      await deliveredMutation.mutateAsync(orderId);
-      setIsDeliverOpen(false);
-    } catch (error) {
-      // A 409 ("already finished or cancelled") and anything else: the server's own words.
-      setDeliverError(getApiErrorMessage(error, "Could not mark the order delivered."));
-    }
-  }
-
   async function handleMarkNotCollected() {
     setNotCollectedError(null);
     try {
@@ -227,12 +201,10 @@ export function OrderDetailPage() {
   }
 
   async function handleReleaseNow() {
-    if (!window.confirm("Release this order now? It goes to Incoming orders right away, ahead of its scheduled time.")) {
-      return;
-    }
     setReleaseError(null);
     try {
       await releaseMutation.mutateAsync(orderId);
+      setIsReleaseOpen(false);
     } catch (error) {
       setReleaseError(getApiErrorMessage(error, "Failed to release the order"));
     }
@@ -241,18 +213,6 @@ export function OrderDetailPage() {
   const selectedAddItem = addableMenuItems.find((item) => item.id === addItemMenuItemId);
   const selectedAddItemSizes = selectedAddItem ? selectedAddItem.variants.filter((variant) => variant.price !== null) : [];
   const isSelectedAddItemSized = selectedAddItemSizes.length > 0;
-
-  // order.totalAmount already has the order's CURRENT discount subtracted — add it back to
-  // get the pre-discount subtotal, then apply whatever's currently typed in the discount
-  // field, so the preview updates live without an extra round-trip to the server.
-  const preDiscountTotal = Number(order.totalAmount) + Number(order.discount);
-  const confirmDiscountNumber = Number(confirmDiscount) || 0;
-  // A reason is needed only when the discount is being changed to something above 0.
-  const isDiscountChanging = confirmDiscountNumber !== Number(order.discount);
-  const needsDiscountReason = isDiscountChanging && confirmDiscountNumber > 0;
-  const newTotal = Math.max(preDiscountTotal - confirmDiscountNumber, 0);
-  const confirmPaidNumber = confirmPaidAmount.trim() === "" ? null : Number(confirmPaidAmount);
-  const changeDue = confirmPaidNumber !== null && !Number.isNaN(confirmPaidNumber) ? confirmPaidNumber - newTotal : null;
 
   async function handleAssignSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -321,11 +281,9 @@ export function OrderDetailPage() {
 
   async function handleRemoveItem(item: OrderItem) {
     setRemoveItemError(null);
-    if (!window.confirm(`Remove ${item.quantity} × ${item.menuItem.name} from this order?`)) {
-      return;
-    }
     try {
       await removeItemMutation.mutateAsync({ id: orderId, itemId: item.id });
+      setItemToRemove(null);
     } catch (error) {
       setRemoveItemError(getApiErrorMessage(error, "Failed to remove item"));
     }
@@ -337,46 +295,12 @@ export function OrderDetailPage() {
     setIsCancelOpen(false);
   }
 
-  async function handleConfirmPayment(event: FormEvent<HTMLFormElement>) {
-    if (!order) {
-      return;
-    }
-    event.preventDefault();
-    setConfirmPaymentError(null);
-
-    const discountNumber = Number(confirmDiscount);
-    if (confirmDiscount.trim() === "" || Number.isNaN(discountNumber) || discountNumber < 0) {
-      setConfirmPaymentError("Discount must be a non-negative number.");
-      return;
-    }
-    const paidNumber = Number(confirmPaidAmount);
-    if (confirmPaidAmount.trim() === "" || Number.isNaN(paidNumber) || paidNumber < 0) {
-      setConfirmPaymentError("Enter how much was paid.");
-      return;
-    }
-    if (needsDiscountReason && confirmDiscountReason.trim() === "") {
-      setConfirmPaymentError("Enter a reason for the discount.");
-      return;
-    }
-
-    try {
-      await paymentStatusMutation.mutateAsync({
-        id: orderId,
-        paymentStatus: "VERIFIED",
-        discount: discountNumber,
-        ...(needsDiscountReason ? { discountReason: confirmDiscountReason.trim() } : {}),
-        paidAmount: paidNumber,
-      });
-    } catch (error) {
-      setConfirmPaymentError(getApiErrorMessage(error, "Failed to confirm payment"));
-    }
-  }
-
   async function handleMarkUnpaid() {
+    setMarkUnpaidError(null);
     try {
       await paymentStatusMutation.mutateAsync({ id: orderId, paymentStatus: "PENDING" });
     } catch (error) {
-      window.alert(getApiErrorMessage(error, "Failed to mark unpaid"));
+      setMarkUnpaidError(getApiErrorMessage(error, "Failed to mark unpaid"));
     }
   }
 
@@ -468,29 +392,12 @@ export function OrderDetailPage() {
                 </Button>
               </>
             )}
-            {canMarkDelivered && (
+            {canComplete && (
               <>
-                <Button
-                  variant="success"
-                  onClick={() => {
-                    setDeliverError(null);
-                    setIsDeliverOpen(true);
-                  }}
-                >
-                  {deliverLabel}
+                <Button variant="success" onClick={() => setIsCompleteOpen(true)}>
+                  Complete order
                 </Button>
-                <ConfirmDialog
-                  isOpen={isDeliverOpen}
-                  onClose={() => setIsDeliverOpen(false)}
-                  onConfirm={() => void handleMarkDelivered()}
-                  title={`${deliverLabel}: order #${orderNumber}?`}
-                  message="This finishes the order. Only do it once it has really been handed over to the customer."
-                  confirmLabel={deliverLabel}
-                  confirmingLabel="Saving…"
-                  confirmVariant="success"
-                  isConfirming={deliveredMutation.isPending}
-                  error={deliverError}
-                />
+                <CompleteOrderDialog orderId={isCompleteOpen ? orderId : null} onClose={() => setIsCompleteOpen(false)} />
               </>
             )}
             {canMarkNotCollected && (
@@ -545,15 +452,29 @@ export function OrderDetailPage() {
             {formatTimeUntil(order.scheduledFor)}). It isn't in Incoming orders or any kitchen yet, nothing has printed
             and no stock has been used. At that time it's sent to Incoming orders automatically.
           </p>
-          {releaseError && (
-            <p role="alert" className="text-body text-status-danger-text">
-              {releaseError}
-            </p>
-          )}
           <div className="flex flex-wrap gap-2">
-            <Button variant="success" onClick={handleReleaseNow} disabled={releaseMutation.isPending}>
-              {releaseMutation.isPending ? "Releasing…" : "Release now"}
+            <Button
+              variant="success"
+              onClick={() => {
+                setReleaseError(null);
+                setIsReleaseOpen(true);
+              }}
+              disabled={releaseMutation.isPending}
+            >
+              Release now
             </Button>
+            <ConfirmDialog
+              isOpen={isReleaseOpen}
+              onClose={() => setIsReleaseOpen(false)}
+              onConfirm={() => void handleReleaseNow()}
+              title={`Release order #${orderNumber} now?`}
+              message="It goes to Incoming orders right away, ahead of its scheduled time."
+              confirmLabel="Release now"
+              confirmingLabel="Releasing…"
+              confirmVariant="success"
+              isConfirming={releaseMutation.isPending}
+              error={releaseError}
+            />
             <Button variant="secondary" onClick={() => navigate(`/scheduled/${order.id}/edit`)}>
               Edit items
             </Button>
@@ -675,83 +596,25 @@ export function OrderDetailPage() {
       {order.paymentMethod === "CASH" && (
         <Card title="Confirm Payment" className="max-w-2xl">
           {order.paymentStatus === "VERIFIED" ? (
-            <FormActions>
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={handleMarkUnpaid}
-                disabled={paymentStatusMutation.isPending}
-              >
-                Mark unpaid
-              </Button>
-            </FormActions>
-          ) : (
-            <form onSubmit={handleConfirmPayment} className="flex flex-col gap-4">
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <div className="flex flex-col gap-1.5">
-                  <label htmlFor="confirm-discount" className="text-meta font-medium text-ink-muted">
-                    Discount
-                  </label>
-                  <Input
-                    id="confirm-discount"
-                    type="number"
-                    min={0}
-                    step={0.01}
-                    value={confirmDiscount}
-                    onChange={(event) => setConfirmDiscount(event.target.value)}
-                  />
-                  <DiscountCapHint />
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  <label htmlFor="confirm-paid" className="text-meta font-medium text-ink-muted">
-                    Amount paid
-                  </label>
-                  <Input
-                    id="confirm-paid"
-                    type="number"
-                    min={0}
-                    step={0.01}
-                    value={confirmPaidAmount}
-                    onChange={(event) => setConfirmPaidAmount(event.target.value)}
-                    required
-                  />
-                </div>
-              </div>
-              {needsDiscountReason && (
-                <div className="flex flex-col gap-1.5">
-                  <label htmlFor="confirm-discount-reason" className="text-meta font-medium text-ink-muted">
-                    Discount reason (required)
-                  </label>
-                  <Input
-                    id="confirm-discount-reason"
-                    value={confirmDiscountReason}
-                    maxLength={200}
-                    onChange={(event) => setConfirmDiscountReason(event.target.value)}
-                    placeholder="e.g. regular customer, late order"
-                  />
-                </div>
-              )}
-              <div className="flex flex-wrap gap-6 text-body text-ink">
-                <span>
-                  Total after discount: <span className="text-numeric font-medium">{newTotal.toFixed(2)}</span>
-                </span>
-                {changeDue !== null && (
-                  <span>
-                    Change due: <span className="text-numeric font-medium">{changeDue.toFixed(2)}</span>
-                  </span>
-                )}
-              </div>
-              {confirmPaymentError && (
+            <div className="flex flex-col gap-3">
+              {markUnpaidError && (
                 <p role="alert" className="text-body text-status-danger-text">
-                  {confirmPaymentError}
+                  {markUnpaidError}
                 </p>
               )}
               <FormActions>
-                <Button type="submit" variant="success" disabled={paymentStatusMutation.isPending}>
-                  {paymentStatusMutation.isPending ? "Confirming…" : "Confirm Payment"}
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={handleMarkUnpaid}
+                  disabled={paymentStatusMutation.isPending}
+                >
+                  Mark unpaid
                 </Button>
               </FormActions>
-            </form>
+            </div>
+          ) : (
+            <ConfirmPaymentForm key={order.id} order={order} />
           )}
         </Card>
       )}
@@ -808,11 +671,17 @@ export function OrderDetailPage() {
 
       <div className="flex flex-col gap-4">
         <h2 className="font-heading text-section font-semibold text-ink">Items</h2>
-        {removeItemError && (
-          <p role="alert" className="text-body text-status-danger-text">
-            {removeItemError}
-          </p>
-        )}
+        <ConfirmDialog
+          isOpen={itemToRemove !== null}
+          onClose={() => setItemToRemove(null)}
+          onConfirm={() => itemToRemove && void handleRemoveItem(itemToRemove)}
+          title="Remove item?"
+          message={itemToRemove ? `Remove ${itemToRemove.quantity} × ${itemToRemove.menuItem.name} from order #${orderNumber}?` : ""}
+          confirmLabel="Remove"
+          confirmingLabel="Removing…"
+          isConfirming={removeItemMutation.isPending}
+          error={removeItemError}
+        />
         {Array.from(itemsByKitchen.entries()).map(([kitchenId, items]) => (
           <div key={kitchenId} className="flex flex-col gap-2">
             <h3 className="text-card-head font-semibold text-ink">{kitchenNameById.get(kitchenId) ?? "Unknown kitchen"}</h3>
@@ -877,7 +746,10 @@ export function OrderDetailPage() {
                         {canRemove && (
                           <Button
                             variant="danger"
-                            onClick={() => handleRemoveItem(item)}
+                            onClick={() => {
+                              setRemoveItemError(null);
+                              setItemToRemove(item);
+                            }}
                             disabled={removeItemMutation.isPending}
                           >
                             Remove

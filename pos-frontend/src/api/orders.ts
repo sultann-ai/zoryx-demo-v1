@@ -161,8 +161,10 @@ interface OrderBase {
   updatedAt: string;
 }
 
-// GET /orders — bare rows, no relations.
-export interface OrderSummary extends OrderBase {}
+// GET /orders — bare rows plus each item's status (what the display status is derived from).
+export interface OrderSummary extends OrderBase {
+  items?: { status: OrderItemStatus }[];
+}
 
 // GET /orders/:id, and every write endpoint's response — includes items + diningArea.
 export interface OrderDetail extends OrderBase {
@@ -428,6 +430,12 @@ export const ordersApi = {
   // strike against the phone (3 in 90 days stops new online orders from it). 409 unless a pickup order is accepted and open.
   markNotCollected: async (id: string): Promise<OrderDetail> => {
     const { data } = await apiClient.post<OrderDetail>(`/api/pos/orders/${id}/not-collected`);
+    return data;
+  },
+  // Finish a paid, accepted (PENDING/CONFIRMED) order of any source and type -> COMPLETED; its items
+  // leave the kitchen screens. 409 code UNPAID until payment is confirmed, NOT_COMPLETABLE otherwise.
+  complete: async (id: string): Promise<OrderDetail> => {
+    const { data } = await apiClient.post<OrderDetail>(`/api/pos/orders/${id}/complete`);
     return data;
   },
   // The order has been handed over / delivered -> COMPLETED. 409 unless it's accepted and still open.

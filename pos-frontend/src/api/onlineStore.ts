@@ -34,6 +34,8 @@ export interface SiteSettings {
   tiktokUrl: string | null;
   // The largest discount a POS Admin may give, % of an order's items ("20.00"). SUPER_ADMIN-only to change.
   maxDiscountPercentPosAdmin: string;
+  // A POS takeaway is completed the moment it is marked paid (default true). SA/PA only to change.
+  autoCompleteTakeawayOnPayment: boolean;
   updatedAt: string;
 }
 

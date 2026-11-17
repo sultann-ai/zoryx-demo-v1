@@ -95,6 +95,9 @@ enum OrderEventType {
   ITEM_ADDED
   ACCEPTED
   REJECTED
+  // The order was finished: completeOrder (POST /:id/complete), "Mark delivered", or a takeaway
+  // auto-completed when it was marked paid (after.auto = true).
+  COMPLETED
 }
 
 enum PaymentMethod {
@@ -826,6 +829,8 @@ model SiteSettings {
   // The largest discount anyone but a SUPER_ADMIN may give, as a percent of the order's items +
   // deals (before delivery fee). Only a SUPER_ADMIN may change it. Never on the public website.
   maxDiscountPercentPosAdmin Decimal  @default(20) @db.Decimal(5, 2)
+  // A POS TAKEAWAY order is completed the moment it is marked paid (the customer has it in hand).
+  autoCompleteTakeawayOnPayment Boolean @default(true)
   facebookUrl                String?
   instagramUrl               String?
   tiktokUrl                  String?

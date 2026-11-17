@@ -34,7 +34,7 @@ Staff Auth (/api/pos/auth) — public
 POST /login — {username, password} → {token, staff}
 Business Day (/api/pos/business-day) — POS_ADMIN, SUPER_ADMIN
 
-GET /current · POST /start {label?} · POST /end {force?} — without force, 400 {code: UNPAID_ORDERS|OPEN_ORDERS, orderIds, unpaidOrders:[{orderNumber,totalAmount}], unpaidTotal} while orders are open or unpaid
+GET /current · POST /start {label?} · POST /end {force?} — without force, 400 {code: UNPAID_ORDERS|OPEN_ORDERS, orderIds, openOrders:[{id,orderNumber,status,type,source,paymentMethod,paymentStatus,totalAmount,diningArea}], unpaidOrders:[{orderNumber,totalAmount}], unpaidTotal} while orders are open or unpaid
 Kitchens (/api/pos/kitchens) — read: any staff · write: SUPER_ADMIN
 
 GET / GET /:id POST / {name, isActive?} PUT /:id DELETE /:id
@@ -116,6 +116,7 @@ POST /api/online/orders/:publicId/payment-proof — multipart, one image in fiel
 CORS: the website's origin must be listed in the server's CORS_ORIGIN, or browsers block the POST.
 
 Staff (POS app)
+POST /api/pos/orders/:id/complete (POS_ADMIN, SUPER_ADMIN) — a paid PENDING/CONFIRMED order of any source/type -> COMPLETED, remaining items SERVED, kitchens get order:completed {orderId, itemIds}; 409 UNPAID until payment is confirmed, 409 NOT_COMPLETABLE otherwise. A POS TAKEAWAY marked paid completes automatically while SiteSettings.autoCompleteTakeawayOnPayment is true (default; SA/PA may change it).
 POST /api/pos/orders/:id/delivered (POS_ADMIN, SUPER_ADMIN) — an accepted order is handed over -> COMPLETED; 409 NOT_DELIVERABLE otherwise.
 GET /api/pos/orders/incoming?code=K7P2M — find a waiting guest order by its code.
 GET /api/pos/orders/:id/payment-proof?size=thumb|full (POS_ADMIN, SUPER_ADMIN, ONLINE_ADMIN) — the guest's payment proof image (send the Bearer token; fetch as a blob).

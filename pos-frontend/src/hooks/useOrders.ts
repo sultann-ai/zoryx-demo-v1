@@ -194,6 +194,14 @@ export function useMarkOrderDelivered() {
   });
 }
 
+export function useCompleteOrder() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => ordersApi.complete(id),
+    onSuccess: (order) => invalidateIncomingAndList(queryClient, order),
+  });
+}
+
 export function useMarkOrderNotCollected() {
   const queryClient = useQueryClient();
   return useMutation({

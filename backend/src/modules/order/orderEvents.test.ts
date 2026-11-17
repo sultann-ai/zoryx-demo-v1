@@ -36,7 +36,8 @@ describe.skipIf(!isLocalDb)("order actions write their audit event (local DB, ro
   it("confirming cash payment with a new discount records DISCOUNT_SET then PAYMENT_MARKED, with the actor's name", async () => {
     const events = await withRollback(async (tx) => {
       const world = await seedOrderWorld(tx);
-      const order = await world.order();
+      // Dine-in: a POS takeaway would also auto-complete when paid (covered in completeOrder.test.ts).
+      const order = await world.order({ type: "DINE_IN" });
       await orderService.updatePaymentStatus(order.id, "VERIFIED", {
         discount: new Prisma.Decimal(50),
         discountReason: "Regular customer",

@@ -1119,6 +1119,8 @@ export function listOrders(filter: ListOrdersFilter) {
       ...(filter.diningAreaId !== undefined ? { diningAreaId: filter.diningAreaId } : {}),
       ...(filter.placedByStaffId !== undefined ? { placedByStaffId: filter.placedByStaffId } : {}),
     },
+    // Item statuses only — what the POS derives its "In kitchen" / "Ready" / "Served" label from.
+    include: { items: { select: { status: true } } },
     orderBy: { createdAt: "desc" },
   });
 }
@@ -1253,7 +1255,7 @@ function emitOrderCancelled(
 }
 
 function emitItemsGone(
-  event: "order:cancelled" | "order-item:removed",
+  event: "order:cancelled" | "order-item:removed" | "order:completed",
   order: { id: string; orderNumber: number },
   items: { id: string; kitchenId: string }[],
   reachedKitchens: boolean,
@@ -2105,8 +2107,8 @@ const DELIVERABLE_STATUSES: OrderStatus[] = [
   OrderStatus.READY,
 ];
 
-export async function markOrderDelivered(orderId: string): Promise<OrderWithItems> {
-  const existing = await prisma.order.findUnique({ where: { id: orderId }, select: { status: true } });
+export async function markOrderDelivered(orderId: string, actorId: string | null = null): Promise<OrderWithItems> {
+  const existing = await prisma.order.findUnique({ where: { id: orderId }, select: completionSelect });
   if (!existing) {
     throw new OrderNotFoundError();
   }
@@ -2115,19 +2117,136 @@ export async function markOrderDelivered(orderId: string): Promise<OrderWithItem
   }
 
   // Conditional on the status we just read, so a concurrent cancel can't be overwritten.
-  const updated = await prisma.order.updateMany({
-    where: { id: orderId, status: { in: DELIVERABLE_STATUSES } },
-    data: { status: OrderStatus.COMPLETED },
-  });
-  if (updated.count === 0) {
+  const completed = await prisma.$transaction((tx) =>
+    completeInTransaction(tx, existing, { actorId, allowedStatuses: DELIVERABLE_STATUSES, via: "delivered" }),
+  );
+  if (!completed) {
     const now = await prisma.order.findUnique({ where: { id: orderId }, select: { status: true } });
     throw new OrderNotDeliverableError(now?.status ?? existing.status);
   }
 
-  const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId }, include: orderInclude });
+  return afterCompleted(existing);
+}
+
+// ================= Completing an order =================
+
+// The statuses POST /:id/complete finishes an order from — any source, any type. (IN_KITCHEN/READY are
+// never written: the kitchen's progress lives on the items, see deriveDisplayStatus in the POS.)
+export const COMPLETABLE_STATUSES: readonly OrderStatus[] = [OrderStatus.PENDING, OrderStatus.CONFIRMED];
+
+export class OrderNotCompletableError extends Error {
+  constructor(public readonly status: OrderStatus) {
+    super(
+      status === OrderStatus.COMPLETED
+        ? "This order is already completed"
+        : status === OrderStatus.CANCELLED
+          ? "Cancelled orders can't be completed"
+          : status === OrderStatus.AWAITING_RECEPTION
+            ? "Accept this order from Incoming orders before completing it"
+            : status === OrderStatus.SCHEDULED
+              ? "Scheduled orders can't be completed before they are released"
+              : `This order is ${status} and can't be completed`,
+    );
+  }
+}
+
+// The money has to be in first: an unpaid order would leave sales the moment it was done.
+export class OrderUnpaidError extends Error {}
+
+const completionSelect = {
+  id: true,
+  orderNumber: true,
+  status: true,
+  source: true,
+  type: true,
+  paymentStatus: true,
+  placedByStaffId: true,
+  items: { select: { id: true, kitchenId: true, status: true } },
+} satisfies Prisma.OrderSelect;
+
+type CompletionOrder = Prisma.OrderGetPayload<{ select: typeof completionSelect }>;
+
+// The one completion write: status → COMPLETED (conditional on the status read before, so a concurrent
+// cancel can't be overwritten), every item not yet served → SERVED (the kitchen is done with them), and a
+// COMPLETED event with who did it. Returns false when the status moved under us.
+async function completeInTransaction(
+  tx: Prisma.TransactionClient,
+  existing: CompletionOrder,
+  options: { actorId: string | null; allowedStatuses: readonly OrderStatus[]; via: "complete" | "delivered" | "auto" },
+): Promise<boolean> {
+  const result = await tx.order.updateMany({
+    where: { id: existing.id, status: { in: [...options.allowedStatuses] } },
+    data: { status: OrderStatus.COMPLETED },
+  });
+  if (result.count === 0) {
+    return false;
+  }
+  await tx.orderItem.updateMany({
+    where: { orderId: existing.id, status: { not: OrderItemStatus.SERVED } },
+    data: { status: OrderItemStatus.SERVED },
+  });
+  await recordOrderEvent(tx, {
+    orderId: existing.id,
+    actorId: options.actorId,
+    type: OrderEventType.COMPLETED,
+    before: { status: existing.status, paymentStatus: existing.paymentStatus },
+    after: { status: OrderStatus.COMPLETED, ...(options.via === "auto" ? { auto: true } : {}), via: options.via },
+  });
+  return true;
+}
+
+// Everyone who shows the order hears it's done: pos-admin (lists, dashboards), each kitchen that still had
+// unserved items on it ("order:completed" with that kitchen's item ids — the KDS drops those cards), and
+// the waiter who placed it.
+async function afterCompleted(existing: CompletionOrder): Promise<OrderWithItems> {
+  const order = await prisma.order.findUniqueOrThrow({ where: { id: existing.id }, include: orderInclude });
+  const stillInKitchen = existing.items.filter((item) => item.status !== OrderItemStatus.SERVED);
   emitSafely(() => getIO().to("pos-admin").emit("order:updated", { orderId: order.id, orderNumber: order.orderNumber }));
+  emitItemsGone("order:completed", order, stillInKitchen, true);
   emitOrderStatusToTaker(order);
   return order;
+}
+
+// POST /:id/complete (SA, PA): finish a paid, accepted order of any source and type.
+export async function completeOrder(orderId: string, actorId: string): Promise<OrderWithItems> {
+  const existing = await prisma.order.findUnique({ where: { id: orderId }, select: completionSelect });
+  if (!existing) {
+    throw new OrderNotFoundError();
+  }
+  if (!COMPLETABLE_STATUSES.includes(existing.status)) {
+    throw new OrderNotCompletableError(existing.status);
+  }
+  if (!isPaid(existing)) {
+    throw new OrderUnpaidError();
+  }
+  const completed = await prisma.$transaction((tx) =>
+    completeInTransaction(tx, existing, { actorId, allowedStatuses: COMPLETABLE_STATUSES, via: "complete" }),
+  );
+  if (!completed) {
+    const now = await prisma.order.findUnique({ where: { id: orderId }, select: { status: true } });
+    throw new OrderNotCompletableError(now?.status ?? existing.status);
+  }
+  return afterCompleted(existing);
+}
+
+// A POS takeaway is handed over when it's paid for, so marking it paid completes it too — when the
+// SiteSettings switch is on (it is by default). Only an order that just became paid, still open.
+async function shouldAutoComplete(
+  tx: Prisma.TransactionClient,
+  existing: CompletionOrder,
+  paymentStatus: PaymentStatus,
+): Promise<boolean> {
+  if (
+    paymentStatus !== PaymentStatus.VERIFIED ||
+    existing.paymentStatus === PaymentStatus.VERIFIED ||
+    existing.source !== OrderSource.POS ||
+    existing.type !== OrderType.TAKEAWAY ||
+    !COMPLETABLE_STATUSES.includes(existing.status)
+  ) {
+    return false;
+  }
+  const settings = await tx.siteSettings.findUnique({ where: { id: 1 }, select: { autoCompleteTakeawayOnPayment: true } });
+  return settings?.autoCompleteTakeawayOnPayment ?? true;
 }
 
 // An accepted online PICKUP order the customer never came for. The order is cancelled (the same plain cancel as
@@ -2252,13 +2371,13 @@ export async function updatePaymentStatus(
   const existing = await prisma.order.findUnique({
     where: { id },
     select: {
+      ...completionSelect,
       paymentMethod: true,
-      paymentStatus: true,
       paidAmount: true,
       discount: true,
       totalAmount: true,
       deliveryFee: true,
-      items: { select: { subtotal: true } },
+      items: { select: { id: true, kitchenId: true, status: true, subtotal: true } },
       dealLines: { select: { subtotal: true } },
     },
   });
@@ -2337,9 +2456,13 @@ export async function updatePaymentStatus(
         after: { paymentStatus, paidAmount: money(updated.paidAmount), totalAmount: money(updated.totalAmount) },
       });
     }
-    return updated;
+    // A POS takeaway is done once it's paid for (SiteSettings.autoCompleteTakeawayOnPayment).
+    const autoCompleted =
+      (await shouldAutoComplete(tx, existing, paymentStatus)) &&
+      (await completeInTransaction(tx, existing, { actorId, allowedStatuses: COMPLETABLE_STATUSES, via: "auto" }));
+    return { updated, autoCompleted };
   });
-  return order;
+  return order.autoCompleted ? afterCompleted(existing) : order.updated;
 }
 
 const CLOSED_ORDER_STATUSES = new Set<OrderStatus>([OrderStatus.CANCELLED, OrderStatus.COMPLETED]);
@@ -2824,8 +2947,12 @@ export function getKitchenQueue(kitchenId: string) {
       // An AWAITING_RECEPTION order's items are real PENDING rows in the database (the
       // kitchen emit is just skipped at creation) — without this, a reload of the kitchen
       // screen would surface them anyway via this plain REST refetch.
-      // Same for a SCHEDULED order's items, which aren't released yet.
-      order: { status: { notIn: [OrderStatus.AWAITING_RECEPTION, OrderStatus.SCHEDULED] } },
+      // Same for a SCHEDULED order's items, which aren't released yet. A cancelled order keeps its
+      // items' last status, so without CANCELLED here a refetch (reload, socket reconnect) would bring
+      // its cards back; COMPLETED is belt and braces (completing marks every item SERVED).
+      order: {
+        status: { notIn: [OrderStatus.AWAITING_RECEPTION, OrderStatus.SCHEDULED, OrderStatus.CANCELLED, OrderStatus.COMPLETED] },
+      },
     },
     include: {
       order: { select: { orderNumber: true, diningArea: true } },

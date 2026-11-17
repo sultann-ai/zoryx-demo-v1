@@ -1,4 +1,5 @@
 import type { OrderDetail } from "../../api/orders";
+import { deriveKitchenProgress } from "../../lib/displayStatus";
 
 // Order.status itself never reaches IN_KITCHEN/READY for an order-taker order (only PENDING once
 // accepted, then CANCELLED if rejected/cancelled, or COMPLETED once staff mark it delivered — see the
@@ -17,18 +18,9 @@ export function deriveDisplayStatus(order: OrderDetail): TakerDisplayStatus {
   if (order.status === "COMPLETED") {
     return "SERVED";
   }
-  if (order.items.length === 0) {
-    return "IN_KITCHEN";
-  }
-  if (order.items.some((item) => item.status === "PENDING" || item.status === "PREPARING")) {
-    return "IN_KITCHEN";
-  }
-  if (order.items.every((item) => item.status === "SERVED")) {
-    return "SERVED";
-  }
-  // Everything is READY, or a READY/SERVED mix — judgment call: read as "Ready" until
-  // every item is served.
-  return "READY";
+  // Accepted and open: the kitchen's progress (shared with the staff screens), "In kitchen" until
+  // anything has moved.
+  return deriveKitchenProgress(order.items) ?? "IN_KITCHEN";
 }
 
 export const TAKER_DISPLAY_STATUS_LABEL: Record<TakerDisplayStatus, string> = {
