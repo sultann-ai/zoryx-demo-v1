@@ -1,0 +1,34 @@
+# Hostinger (LiteSpeed/Apache). Copied into dist/ by Vite, which replaces %API_ORIGIN% with VITE_API_URL's origin
+# (vite.config.ts): upload it together with the rest of dist/. Mirrors the headers in vercel.json.
+# Turn on "Force HTTPS" for the subdomain in hPanel; it is not forced here to avoid a redirect loop behind the CDN.
+
+Options -MultiViews
+DirectoryIndex index.html
+AddType application/manifest+json .webmanifest
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+  # Real files and folders are served as they are.
+  RewriteCond %{REQUEST_FILENAME} -f [OR]
+  RewriteCond %{REQUEST_FILENAME} -d
+  RewriteRule ^ - [L]
+  # A missing build file must stay a 404, not turn into index.html (a stale tab would load HTML as JavaScript).
+  RewriteRule ^assets/ - [R=404,L]
+  # Every other path belongs to the React router.
+  RewriteRule ^ index.html [L]
+</IfModule>
+
+<IfModule mod_headers.c>
+  Header always set Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: %API_ORIGIN%; media-src 'self'; font-src 'self'; connect-src 'self' %API_ORIGIN%; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set Referrer-Policy "no-referrer"
+  # index.html must never be cached, so a new upload is picked up on the next load.
+  <FilesMatch "^(index\.html)?$">
+    Header set Cache-Control "no-cache"
+  </FilesMatch>
+  # Vite's build files carry a content hash in their name, so they can be cached forever.
+  <FilesMatch "-[A-Za-z0-9_-]{8}\.(js|css|woff2?)$">
+    Header set Cache-Control "public, max-age=31536000, immutable"
+  </FilesMatch>
+</IfModule>

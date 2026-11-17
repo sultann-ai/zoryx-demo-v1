@@ -1,0 +1,32 @@
+# Hostinger (LiteSpeed/Apache). Copied into dist/ by Vite: upload it together with the rest of dist/.
+# Turn on "Force HTTPS" for the subdomain in hPanel; it is not forced here to avoid a redirect loop behind the CDN.
+
+Options -MultiViews
+DirectoryIndex index.html
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+  # Real files and folders are served as they are.
+  RewriteCond %{REQUEST_FILENAME} -f [OR]
+  RewriteCond %{REQUEST_FILENAME} -d
+  RewriteRule ^ - [L]
+  # A missing build file must stay a 404, not turn into index.html (a stale tab would load HTML as JavaScript).
+  RewriteRule ^assets/ - [R=404,L]
+  # Every other path belongs to the React router.
+  RewriteRule ^ index.html [L]
+</IfModule>
+
+<IfModule mod_headers.c>
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set X-Frame-Options "DENY"
+  Header always set Referrer-Policy "no-referrer"
+  # index.html must never be cached, so a new upload is picked up on the next load.
+  <FilesMatch "^(index\.html)?$">
+    Header set Cache-Control "no-cache"
+  </FilesMatch>
+  # Vite's build files carry a content hash in their name, so they can be cached forever.
+  <FilesMatch "-[A-Za-z0-9_-]{8}\.(js|css|woff2?)$">
+    Header set Cache-Control "public, max-age=31536000, immutable"
+  </FilesMatch>
+</IfModule>

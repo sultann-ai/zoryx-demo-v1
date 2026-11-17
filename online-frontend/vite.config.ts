@@ -22,6 +22,9 @@ function siteUrl(url: string, apiUrl: string): Plugin {
   return {
     name: 'site-url',
     buildStart() {
+      if (/REPLACE-WITH/i.test(apiUrl)) {
+        this.warn('VITE_API_URL is still the placeholder in .env.production: this build cannot reach the API. Set the Railway URL and rebuild.')
+      }
       // The CSP in vercel.json must allow the API origin, or every API call and image is blocked in production.
       try {
         const csp = JSON.stringify(JSON.parse(readFileSync('vercel.json', 'utf8')))
@@ -48,10 +51,11 @@ function siteUrl(url: string, apiUrl: string): Plugin {
       order: 'post',
       async handler() {
         const { readFile, writeFile } = await import('node:fs/promises')
-        for (const name of ['robots.txt', 'sitemap.xml']) {
+        // .htaccess carries Hostinger's Content-Security-Policy, which must allow the API origin.
+        for (const name of ['robots.txt', 'sitemap.xml', '.htaccess']) {
           const file = `dist/${name}`
           try {
-            await writeFile(file, (await readFile(file, 'utf8')).replaceAll('%SITE_URL%', clean))
+            await writeFile(file, (await readFile(file, 'utf8')).replaceAll('%SITE_URL%', clean).replaceAll('%API_ORIGIN%', apiOrigin))
           } catch {
             /* file missing: nothing to template */
           }
