@@ -13,7 +13,8 @@ Branches: `demo` is what restaurants see. Day-to-day work happens on `main`; to 
 
 1. New project → **Deploy from GitHub repo** → `zoryx-demo-v1`.
 2. Service **Settings**:
-   - **Root Directory:** `/backend`. Railway then reads `backend/railway.json`, which sets the build (`npm run build`), start (`npm start`, which runs `prisma migrate deploy` first), health check (`/health`) and redeploys only when `backend/` changes.
+   - **Root Directory:** `/backend`.
+   - **Config-as-code → Railway Config File:** `/backend/railway.json` (the config file path does not follow the Root Directory, so give the full path). It sets the build (`npm run build`), start (`npm start`, which runs `prisma migrate deploy` first), health check (`/health`) and redeploys only when `backend/` changes.
    - **Branch:** `demo`.
 3. In the same project: **+ New → Database → PostgreSQL**.
 4. Backend service → **Variables**:
@@ -33,13 +34,16 @@ Branches: `demo` is what restaurants see. Day-to-day work happens on `main`; to 
 
 The first boot creates every table from the migrations. The database starts empty, so load data with one of these, run from `backend/` on your PC against the database's **public** URL (Postgres service → Variables → `DATABASE_PUBLIC_URL`):
 
-```bash
+```powershell
+# Windows PowerShell, inside backend/. The variables last only for this terminal window; close it afterwards.
+$env:DATABASE_URL = "<DATABASE_PUBLIC_URL>"
+
 # Demo restaurant: menu, staff (all passwords demo1234), 60 days of history, DEMO pill on.
 # Refuses on a database that already has real orders.
-DATABASE_URL="<DATABASE_PUBLIC_URL>" DEMO_RESET_ALLOWED=true npm run demo:reset -- --yes
+$env:DEMO_RESET_ALLOWED = "true"; npm run demo:reset -- --yes
 
 # Or just one Super Admin account
-DATABASE_URL="<DATABASE_PUBLIC_URL>" ADMIN_USERNAME=admin ADMIN_PASSWORD='<8+ chars>' node scripts/create-admin.js
+$env:ADMIN_USERNAME = "admin"; $env:ADMIN_PASSWORD = "<8+ chars>"; node scripts/create-admin.js
 ```
 
 ## 2. Build the frontends (on your PC)
