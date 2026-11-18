@@ -19,8 +19,8 @@ Each app is built and deployed on its own — there is no root `package.json`.
 | App | Deployed to |
 |---|---|
 | `backend/` | Railway (with its PostgreSQL), from the `demo` branch |
-| `pos-frontend/` | Hostinger — https://pos.zoryx.sultaann.com |
-| `online-frontend/` | Hostinger — https://order.zoryx.sultaann.com |
+| `pos-frontend/` | Hostinger — https://pos-zoryx.sultaann.com |
+| `online-frontend/` | Hostinger — https://order-zoryx.sultaann.com |
 | `print-agent/` | Not deployed — installed on the cashier's PC |
 
 Step-by-step setup: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
