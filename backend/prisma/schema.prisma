@@ -39,6 +39,9 @@ enum OrderSource {
   ONLINE
   PHONE
   ORDER_TAKER
+  // A dine-in round a guest sent from their phone after scanning the table's QR (Table QR). Lands
+  // AWAITING_RECEPTION like an order-taker order; see docs/TABLE_QR_SPEC.md.
+  TABLE_QR
 }
 
 enum OrderType {
@@ -149,6 +152,60 @@ enum MediaKind {
   PAYMENT_PROOF
 }
 
+// Table QR (docs/TABLE_QR_SPEC.md): floor-map shape of a table.
+enum TableShape {
+  RECT
+  ROUND
+}
+
+enum TableSessionStatus {
+  // Seated; guests may join. One OPEN session per table (partial unique index in the migration).
+  OPEN
+  // Finished normally; every guest token is dead.
+  CLOSED
+  // Closed without a sale (seated by mistake, guests left).
+  VOIDED
+}
+
+// Table QR waiter calls (docs/TABLE_QR_SPEC.md §3.4).
+enum TableCallType {
+  WATER
+  NAPKINS
+  BILL_CASH
+  OTHER
+}
+
+enum TableCallStatus {
+  RAISED
+  ACKNOWLEDGED
+  RESOLVED
+  // The guest withdrew it, or the session closed/voided while it was open.
+  CANCELLED
+}
+
+// What a TableSessionEvent records. Phase-2 bill values are declared now so the enum is altered once.
+enum TableSessionEventType {
+  SEATED
+  GUEST_JOINED
+  GUEST_REMOVED
+  PIN_ROTATED
+  PIN_LOCKED
+  WAITER_CHANGED
+  CLOSED
+  VOIDED
+  BILL_REQUESTED
+  BILL_UNLOCKED
+  BILL_DISCOUNT_SET
+  SPLIT_SET
+  SPLIT_CANCELLED
+  SHARE_PAID
+  SHARE_PROOF
+  SHARE_VERIFIED
+  SHARE_REJECTED
+  SHARE_UNMARKED
+  BILL_PAID
+}
+
 // ================= STAFF / AUTH (POS side) =================
 
 model StaffUser {
@@ -178,6 +235,15 @@ model StaffUser {
   orderEvents           OrderEvent[]           @relation("OrderEventActor")
   ordersCancelled       Order[]                @relation("CancelledBy")
   ordersDiscounted      Order[]                @relation("DiscountBy")
+  tablesDefaultWaiter   DiningArea[]           @relation("TableDefaultWaiter")
+  tableSessionsWaiter   TableSession[]         @relation("TableSessionWaiter")
+  tableSessionsSeated   TableSession[]         @relation("TableSessionSeatedBy")
+  tableSessionsClosed   TableSession[]         @relation("TableSessionClosedBy")
+  tableSessionEvents    TableSessionEvent[]
+  tableGuestsRevoked    TableGuest[]           @relation("TableGuestRevokedBy")
+  tableCallsRouted      TableCall[]            @relation("TableCallRoutedTo")
+  tableCallsAcked       TableCall[]            @relation("TableCallAcknowledgedBy")
+  tableCallsResolved    TableCall[]            @relation("TableCallResolvedBy")
 
   @@index([role])
 }
@@ -243,6 +309,8 @@ model MenuItem {
   sortOrder         Int         @default(0)
   isAvailableInPOS  Boolean     @default(true)
   isAvailableOnline Boolean     @default(true)
+  // On the Table QR menu. Independent of isAvailableOnline; never true for an open-price item.
+  isAvailableOnQr   Boolean     @default(false)
   createdAt         DateTime    @default(now())
   updatedAt         DateTime    @updatedAt
 
@@ -313,6 +381,8 @@ model Deal {
   isActive          Boolean     @default(true)
   isAvailableInPOS  Boolean     @default(true)
   isAvailableOnline Boolean     @default(true)
+  // On the Table QR menu (independent of isAvailableOnline).
+  isAvailableOnQr   Boolean     @default(false)
   createdAt         DateTime    @default(now())
   updatedAt         DateTime    @updatedAt
 
@@ -363,18 +433,36 @@ model DealComponent {
 // ================= DINING AREA =================
 
 model DiningArea {
-  id       String         @id @default(uuid())
-  name     String
-  type     DiningAreaType
+  id                   String         @id @default(uuid())
+  name                 String
+  type                 DiningAreaType
   // Free-text room/section the table is in ("Family Hall", "Gents Hall", "Rooftop") — what
   // the New Order table pickers filter by. Trimmed, at most DINING_AREA_SECTION_MAX_LENGTH
   // (50) characters; null means none ("Other" in the pickers). Backfilled from `type` when
   // added, since `type` was being used as the hall before this existed.
-  area     String?
-  capacity Int?
-  isActive Boolean        @default(true)
+  area                 String?
+  capacity             Int?
+  isActive             Boolean        @default(true)
+  // Table QR. Random and regenerable, never the id; null until first generated (qr-sheet or
+  // regenerate). Never returned by the dining-area list/get (ORDER_TAKER reads those).
+  qrKey                String?        @unique
+  // Floor-map geometry, abstract units on a 1000 x 1000 canvas per `area`. Null = not placed yet.
+  layoutX              Int?
+  layoutY              Int?
+  layoutW              Int?
+  layoutH              Int?
+  shape                TableShape     @default(RECT)
+  // Degrees, 0-359.
+  rotation             Int            @default(0)
+  // Temporarily out of service: stays on the map as UNAVAILABLE, can't be seated, QR is read-only.
+  outOfService         Boolean        @default(false)
+  // Who gets this table's waiter calls by default (copied onto each new session).
+  defaultWaiterStaffId String?
+  defaultWaiterStaff   StaffUser?     @relation("TableDefaultWaiter", fields: [defaultWaiterStaffId], references: [id], onDelete: SetNull)
 
-  orders Order[]
+  orders        Order[]
+  tableSessions TableSession[]
+  tableCalls    TableCall[]
 }
 
 // ================= EMPLOYEES (waiters, riders, cooks, everyone on payroll) =================
@@ -465,7 +553,8 @@ model BusinessDay {
   closedById String?
   closedBy   StaffUser? @relation("ClosedBy", fields: [closedById], references: [id])
 
-  orders Order[]
+  orders        Order[]
+  tableSessions TableSession[]
 
   @@index([isActive])
 }
@@ -552,6 +641,12 @@ model Order {
   cancelledBy          StaffUser?       @relation("CancelledBy", fields: [cancelledById], references: [id], onDelete: SetNull)
   // Set when staff mark an accepted pickup order "Not collected" (the order is cancelled; this counts as a strike for the phone).
   notCollectedAt       DateTime?
+  // Table QR: the session this round belongs to, and the guest who sent it (null for staff-placed).
+  // Every line copies tableGuestId; reception edits keep it (see replaceOrderContents).
+  tableSessionId       String?
+  tableSession         TableSession?    @relation(fields: [tableSessionId], references: [id], onDelete: Restrict)
+  tableGuestId         String?
+  tableGuest           TableGuest?      @relation("OrderTableGuest", fields: [tableGuestId], references: [id], onDelete: SetNull)
   createdAt            DateTime         @default(now())
   updatedAt            DateTime         @updatedAt
 
@@ -570,6 +665,8 @@ model Order {
   @@index([customerPhone, createdAt])
   // Repeat no-shows: pickup orders staff marked "Not collected", counted per phone.
   @@index([customerPhone, notCollectedAt])
+  @@index([tableSessionId])
+  @@index([tableGuestId, createdAt])
 }
 
 model OrderChange {
@@ -649,6 +746,9 @@ model OrderItem {
   // of the AddOn must never alter an already-placed order's line. unitPrice/subtotal
   // already include each add-on's price, summed in at order time.
   addOns          Json?
+  // Table QR: the guest who added this line (null = added by staff, "Table (shared)").
+  tableGuestId    String?
+  tableGuest      TableGuest?      @relation("OrderItemTableGuest", fields: [tableGuestId], references: [id], onDelete: SetNull)
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt
 
@@ -659,18 +759,18 @@ model OrderItem {
 // One row per deal line ordered; its dealId is nullable so a later Deal deletion
 // doesn't break existing order history, and dealName snapshots the name at order time.
 model OrderDealLine {
-  id            String   @id @default(uuid())
+  id            String      @id @default(uuid())
   orderId       String
-  order         Order    @relation(fields: [orderId], references: [id])
+  order         Order       @relation(fields: [orderId], references: [id])
   dealId        String?
-  deal          Deal?    @relation(fields: [dealId], references: [id])
+  deal          Deal?       @relation(fields: [dealId], references: [id])
   dealName      String
   quantity      Int
-  unitPrice     Decimal  @db.Decimal(10, 2)
-  subtotal      Decimal  @db.Decimal(10, 2)
+  unitPrice     Decimal     @db.Decimal(10, 2)
+  subtotal      Decimal     @db.Decimal(10, 2)
   // The deal's standard list price at order time — set on every line, customized or not, so
   // the owner can always see what the standard price was vs. what was actually charged.
-  baseUnitPrice Decimal? @db.Decimal(10, 2)
+  baseUnitPrice Decimal?    @db.Decimal(10, 2)
   // Null = not customized, this line is the deal's standard composition at unitPrice =
   // deal.price. Otherwise a readable snapshot of what the cashier actually built:
   // { reason?: string, items: [{ menuItemId, name, variantLabel?, quantity, addOns: [{name,
@@ -682,7 +782,10 @@ model OrderDealLine {
   // exploded from this line (kitchen display, kitchen slips) since they're all one dish
   // order from the customer's point of view. Null for none.
   notes         String?
-  createdAt     DateTime @default(now())
+  // Table QR: the guest who added this deal line (null = staff).
+  tableGuestId  String?
+  tableGuest    TableGuest? @relation("DealLineTableGuest", fields: [tableGuestId], references: [id], onDelete: SetNull)
+  createdAt     DateTime    @default(now())
 
   items OrderItem[]
 
@@ -804,40 +907,44 @@ model MediaBlob {
 
 // Single row, id always 1 (also enforced by a CHECK constraint in the migration).
 model SiteSettings {
-  id                         Int      @id @default(1)
-  shopNameEn                 String
-  shopNameUr                 String
-  taglineEn                  String
-  taglineUr                  String
-  phone                      String
+  id                            Int      @id @default(1)
+  shopNameEn                    String
+  shopNameUr                    String
+  taglineEn                     String
+  taglineUr                     String
+  phone                         String
   // Digits only, international format without "+", e.g. 923001234567.
-  whatsappNumber             String
-  addressEn                  String
-  addressUr                  String
-  mapUrl                     String
-  openingHoursEn             String
-  openingHoursUr             String
-  announcementEn             String?
-  announcementUr             String?
-  onlineOrderingEnabled      Boolean  @default(true)
+  whatsappNumber                String
+  addressEn                     String
+  addressUr                     String
+  mapUrl                        String
+  openingHoursEn                String
+  openingHoursUr                String
+  announcementEn                String?
+  announcementUr                String?
+  onlineOrderingEnabled         Boolean  @default(true)
   // Which ways to order are offered online (at least one stays on). Pickup is a TAKEAWAY order.
-  deliveryEnabled            Boolean  @default(true)
-  pickupEnabled              Boolean  @default(true)
-  pickupMinOrderAmount       Decimal  @default(0) @db.Decimal(10, 2)
-  pickupNoteEn               String?
-  pickupNoteUr               String?
+  deliveryEnabled               Boolean  @default(true)
+  pickupEnabled                 Boolean  @default(true)
+  pickupMinOrderAmount          Decimal  @default(0) @db.Decimal(10, 2)
+  pickupNoteEn                  String?
+  pickupNoteUr                  String?
   // The largest discount anyone but a SUPER_ADMIN may give, as a percent of the order's items +
   // deals (before delivery fee). Only a SUPER_ADMIN may change it. Never on the public website.
-  maxDiscountPercentPosAdmin Decimal  @default(20) @db.Decimal(5, 2)
+  maxDiscountPercentPosAdmin    Decimal  @default(20) @db.Decimal(5, 2)
   // A POS TAKEAWAY order is completed the moment it is marked paid (the customer has it in hand).
-  autoCompleteTakeawayOnPayment Boolean @default(true)
+  autoCompleteTakeawayOnPayment Boolean  @default(true)
   // True only on a demo install (set by the demo seed, npm run demo:reset). Shows the "DEMO" pill in the
   // POS logo and on receipts, and lets demo:reset wipe a database that already has orders.
-  isDemo                     Boolean  @default(false)
-  facebookUrl                String?
-  instagramUrl               String?
-  tiktokUrl                  String?
-  updatedAt                  DateTime @updatedAt
+  isDemo                        Boolean  @default(false)
+  // Table QR master switch: off = every table QR shows the menu read-only.
+  tableQrEnabled                Boolean  @default(false)
+  // New table sessions get a 4-digit PIN (read at seat time).
+  tableQrRequirePin             Boolean  @default(false)
+  facebookUrl                   String?
+  instagramUrl                  String?
+  tiktokUrl                     String?
+  updatedAt                     DateTime @updatedAt
 }
 
 model DeliveryArea {
@@ -904,4 +1011,122 @@ model OrderClientIp {
   createdAt DateTime @default(now())
 
   @@index([ipHash, createdAt])
+}
+
+// ================= TABLE QR (docs/TABLE_QR_SPEC.md) =================
+
+// One seating of a table, from "seat" to close/void. Guests join it by scanning the table's QR.
+// Hand-written partial unique index in the migration: one OPEN session per table.
+model TableSession {
+  id            String             @id @default(uuid())
+  diningAreaId  String
+  diningArea    DiningArea         @relation(fields: [diningAreaId], references: [id], onDelete: Restrict)
+  businessDayId String
+  businessDay   BusinessDay        @relation(fields: [businessDayId], references: [id], onDelete: Restrict)
+  status        TableSessionStatus @default(OPEN)
+  // 4 digits; null when the PIN setting was off at seat time. Staff-only.
+  joinPin       String?            @db.VarChar(4)
+  // Wrong PINs since the last rotation; the 10th rotates the PIN.
+  pinFailures   Int                @default(0)
+  waiterStaffId String?
+  waiterStaff   StaffUser?         @relation("TableSessionWaiter", fields: [waiterStaffId], references: [id], onDelete: SetNull)
+  seatedById    String
+  seatedBy      StaffUser          @relation("TableSessionSeatedBy", fields: [seatedById], references: [id])
+  seatedAt      DateTime           @default(now())
+  closedAt      DateTime?
+  closedById    String?
+  closedBy      StaffUser?         @relation("TableSessionClosedBy", fields: [closedById], references: [id], onDelete: SetNull)
+  voidReason    String?            @db.VarChar(200)
+  // Bumped in the same transaction as anything a guest's poll shows; drives the poll's ETag.
+  version       Int                @default(0)
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  guests TableGuest[]
+  orders Order[]
+  events TableSessionEvent[]
+  calls  TableCall[]
+
+  @@index([diningAreaId, status])
+  @@index([businessDayId, status])
+}
+
+// A phone that joined a session. The token is never stored, only its SHA-256.
+model TableGuest {
+  id            String       @id @default(uuid())
+  sessionId     String
+  session       TableSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  displayName   String       @db.VarChar(30)
+  tokenHash     String       @unique
+  // Client uuid: a double-tapped Join returns the same guest.
+  joinRequestId String?      @unique
+  // 1, 2, 3... within the session.
+  joinOrder     Int
+  // hashClientIp(), for the per-IP join count.
+  joinIpHash    String
+  lastSeenAt    DateTime     @default(now())
+  // Staff removed this guest: the token stops working.
+  revokedAt     DateTime?
+  revokedById   String?
+  revokedBy     StaffUser?   @relation("TableGuestRevokedBy", fields: [revokedById], references: [id], onDelete: SetNull)
+  createdAt     DateTime     @default(now())
+
+  orders     Order[]         @relation("OrderTableGuest")
+  orderItems OrderItem[]     @relation("OrderItemTableGuest")
+  dealLines  OrderDealLine[] @relation("DealLineTableGuest")
+  calls      TableCall[]
+
+  @@unique([sessionId, joinOrder])
+  @@index([sessionId])
+  @@index([joinIpHash, createdAt])
+}
+
+// Append-only audit of a session, same rules as OrderEvent. actorId null = a guest or the system.
+model TableSessionEvent {
+  id        String                @id @default(uuid())
+  sessionId String
+  session   TableSession          @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  type      TableSessionEventType
+  actorId   String?
+  actor     StaffUser?            @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  guestId   String?
+  reason    String?               @db.VarChar(200)
+  before    Json?
+  after     Json?
+  createdAt DateTime              @default(now())
+
+  @@index([sessionId, createdAt])
+}
+
+// A guest's "please come to the table" (water, napkins, the bill in cash, or a note). Routed to the
+// session's waiter, else to every order taker and reception. escalatedAt is set once by the escalation
+// job when nobody acknowledged it within 2 minutes (modules/table/callEscalation.job.ts).
+model TableCall {
+  id               String          @id @default(uuid())
+  sessionId        String
+  session          TableSession    @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  diningAreaId     String
+  diningArea       DiningArea      @relation(fields: [diningAreaId], references: [id], onDelete: Restrict)
+  guestId          String?
+  guest            TableGuest?     @relation(fields: [guestId], references: [id], onDelete: SetNull)
+  type             TableCallType
+  note             String?         @db.VarChar(80)
+  status           TableCallStatus @default(RAISED)
+  // Client uuid: a double-tapped call is created once.
+  clientRequestId  String?         @unique
+  // The waiter it was sent to; null = broadcast to every order taker and reception.
+  routedToStaffId  String?
+  routedToStaff    StaffUser?      @relation("TableCallRoutedTo", fields: [routedToStaffId], references: [id], onDelete: SetNull)
+  acknowledgedById String?
+  acknowledgedBy   StaffUser?      @relation("TableCallAcknowledgedBy", fields: [acknowledgedById], references: [id], onDelete: SetNull)
+  acknowledgedAt   DateTime?
+  resolvedById     String?
+  resolvedBy       StaffUser?      @relation("TableCallResolvedBy", fields: [resolvedById], references: [id], onDelete: SetNull)
+  resolvedAt       DateTime?
+  escalatedAt      DateTime?
+  createdAt        DateTime        @default(now())
+
+  @@index([sessionId, status])
+  @@index([status, createdAt])
+  @@index([guestId, createdAt])
 }

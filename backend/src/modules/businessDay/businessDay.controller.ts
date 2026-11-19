@@ -72,7 +72,10 @@ export async function end(req: Request, res: Response) {
     // Unpaid orders (open or delivered) aren't in the day's sales: list them, by number and
     // amount, so whoever ends the day anyway does it knowingly.
     const unpaid = await businessDayService.getUnpaidOrders(active.id);
-    if (orderIds.length > 0 || unpaid.orders.length > 0) {
+    // Table QR: tables still seated. Their guests couldn't order into the next day, so staff close them
+    // (or end the day anyway with force).
+    const openTableSessions = await businessDayService.getOpenTableSessions(active.id);
+    if (orderIds.length > 0 || unpaid.orders.length > 0 || openTableSessions.length > 0) {
       const problems = [
         orderIds.length > 0
           ? `${orderIds.length} order(s) are still open (awaiting reception, pending, confirmed, in kitchen, or ready — not yet marked delivered)`
@@ -80,14 +83,16 @@ export async function end(req: Request, res: Response) {
         unpaid.orders.length > 0
           ? `${unpaid.orders.length} order(s) are not marked paid (Rs ${unpaid.total.toFixed(2)}, not counted in sales)`
           : null,
+        openTableSessions.length > 0 ? `${openTableSessions.length} table(s) are still seated` : null,
       ].filter((problem): problem is string => problem !== null);
       res.status(400).json({
-        code: unpaid.orders.length > 0 ? "UNPAID_ORDERS" : "OPEN_ORDERS",
+        code: unpaid.orders.length > 0 ? "UNPAID_ORDERS" : orderIds.length > 0 ? "OPEN_ORDERS" : "OPEN_TABLE_SESSIONS",
         error: `Cannot end business day: ${problems.join("; ")}`,
         orderIds,
         openOrders,
         unpaidOrders: unpaid.orders,
         unpaidTotal: unpaid.total,
+        openTableSessions,
       });
       return;
     }

@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import type { Kitchen } from "../../api/kitchens";
-import type { OrderDetail, PaymentMethod } from "../../api/orders";
+import type { OrderDetail, OrderTableGuest, PaymentMethod } from "../../api/orders";
 import { getApiErrorMessage, getApiErrorStatus } from "../../api/errors";
 import { useAcceptOrder, useRejectOrder, useUpdateSubmission } from "../../hooks/useOrders";
+import { useTableRoundNumber } from "../../hooks/useTables";
 import { usePrintDocs } from "../../hooks/usePrinter";
 import { buildKitchenTicketDocs } from "../../print/buildKitchenTicketDocs";
 import { buildReceiptDoc } from "../../print/buildReceiptDoc";
@@ -19,6 +20,7 @@ import { SegmentedControl } from "../newOrder/SegmentedControl";
 import { LineNote } from "../../components/LineNote";
 import { RejectReasonModal } from "./RejectReasonModal";
 import { formatShopTime } from "../../lib/shopTime";
+import { areaLabel } from "../tables/tableStates";
 
 interface IncomingOrderCardProps {
   order: OrderDetail;
@@ -31,6 +33,16 @@ const PAYMENT_METHOD_OPTIONS: { value: PaymentMethod; label: string }[] = [
   { value: "CASH", label: "Cash" },
   { value: "ONLINE", label: "Online" },
 ];
+
+// Table QR: whose line it is. A line staff added to the table's order has no guest: shared.
+function GuestTag({ guest }: { guest: OrderTableGuest | null | undefined }) {
+  return <span className="text-meta text-ink-muted"> — {guest?.displayName ?? "Table (shared)"}</span>;
+}
+
+// "QR · Table 4 · Round 2" — the round number appears once the table's session has loaded.
+function tableQrLabel(order: OrderDetail, round: number | null): string {
+  return ["QR", order.diningArea?.name, round !== null ? `Round ${round}` : null].filter(Boolean).join(" · ");
+}
 
 function minutesWaiting(createdAt: string, now: number): number {
   return Math.floor((now - new Date(createdAt).getTime()) / 60_000);
@@ -76,6 +88,9 @@ export function IncomingOrderCard({ order, kitchens, onGone, onPrintFailure }: I
         : "text-ink-muted";
 
   const isOnline = order.source === "ONLINE";
+  // A guest's round from the table's QR: reviewed exactly like an order taker's order, plus who sent it.
+  const isTableQr = order.source === "TABLE_QR";
+  const round = useTableRoundNumber(order);
   const isOnlinePaid = isOnline && order.paymentMethod === "ONLINE";
   const customer = getOrderCustomer(order);
   // A guest pays online AFTER placing the order, by uploading a screenshot. Until one is there
@@ -199,7 +214,7 @@ export function IncomingOrderCard({ order, kitchens, onGone, onPrintFailure }: I
     <div className="flex flex-col gap-3 rounded-card border border-border bg-surface-raised p-4">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="flex items-center gap-2">
-          <StatusBadge status={order.source} label={ORDER_SOURCE_LABEL[order.source]} />
+          <StatusBadge status={order.source} label={isTableQr ? tableQrLabel(order, round) : ORDER_SOURCE_LABEL[order.source]} />
           {isPickup(order) && <StatusBadge status="PICKUP" label="PICKUP" />}
           <span className="text-body font-semibold text-ink">Order #{order.orderNumber}</span>
         </div>
@@ -212,7 +227,13 @@ export function IncomingOrderCard({ order, kitchens, onGone, onPrintFailure }: I
       {isOnline && <OnlineOrderInfo order={order} />}
 
       <div className="flex flex-col gap-0.5 text-body text-ink">
+        {isTableQr && (
+          <span>
+            {areaLabel(order.diningArea?.area ?? null)} · sent by {order.tableGuest?.displayName ?? "a guest"}
+          </span>
+        )}
         {!isOnline &&
+          !isTableQr &&
           (order.diningArea ? (
             <span>{order.diningArea.name}</span>
           ) : (
@@ -261,12 +282,14 @@ export function IncomingOrderCard({ order, kitchens, onGone, onPrintFailure }: I
               {item.addOns && item.addOns.length > 0 && (
                 <span className="text-meta text-ink-muted"> (+ {item.addOns.map((addOn) => addOn.name).join(", ")})</span>
               )}
+              {isTableQr && <GuestTag guest={item.tableGuest} />}
               {item.notes && <LineNote notes={item.notes} className="ml-4" />}
             </li>
           ))}
           {order.dealLines.map((line) => (
             <li key={line.id}>
               {line.quantity}× {line.dealName}
+              {isTableQr && <GuestTag guest={line.tableGuest} />}
               {line.customization && (
                 <div className="ml-4 flex flex-col text-meta text-ink-muted">
                   {line.customization.items.map((item, index) => (
@@ -290,6 +313,7 @@ export function IncomingOrderCard({ order, kitchens, onGone, onPrintFailure }: I
                 <span className="min-w-0 text-body text-ink">
                   {item.menuItem.name}
                   {item.variantLabel && <span className="text-meta text-ink-muted"> · {item.variantLabel}</span>}
+                  {isTableQr && <GuestTag guest={item.tableGuest} />}
                   {item.notes && <LineNote notes={item.notes} />}
                 </span>
                 <div className="flex items-center gap-1.5">

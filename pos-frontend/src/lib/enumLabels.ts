@@ -23,6 +23,7 @@ export const ORDER_SOURCE_LABEL: Record<OrderSource, string> = {
   ONLINE: "Online",
   PHONE: "Phone",
   ORDER_TAKER: "Order taker",
+  TABLE_QR: "Table QR",
 };
 
 export const PAYMENT_METHOD_LABEL: Record<PaymentMethod, string> = {

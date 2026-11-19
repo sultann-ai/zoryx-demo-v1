@@ -48,6 +48,22 @@ export function listOnlineDeals() {
   });
 }
 
+// The Table QR menu's deals: active and switched on for the QR menu (its own flag).
+export function listQrDeals() {
+  return prisma.deal.findMany({
+    where: { isAvailableOnQr: true, isActive: true },
+    include: {
+      items: { include: { menuItem: { select: { id: true, name: true, nameUr: true, price: true } } } },
+      image: { select: { hasTransparency: true } },
+    },
+    orderBy: { name: "asc" },
+  });
+}
+
+export function setQrAvailability(id: string, isAvailableOnQr: boolean) {
+  return prisma.deal.update({ where: { id }, data: { isAvailableOnQr } });
+}
+
 // The customer-website fields of a deal (photo, Urdu text). Replacing the photo deletes the old
 // asset in the same transaction.
 export function updateDealOnlineContent(id: string, data: Record<string, unknown>) {

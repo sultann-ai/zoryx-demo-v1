@@ -18,6 +18,7 @@ import * as inventoryService from "../inventory/inventory.service";
 import { money, recordOrderEvent } from "./orderEvents";
 import { DiscountActor, checkDiscountChange, discountAttribution, loadDiscountCap } from "./discountPolicy";
 import { isPaid } from "../reports/salesDefinitions";
+import { tableOrderChanged } from "../table/tableNotify";
 
 export class NoActiveBusinessDayError extends Error {}
 
@@ -401,14 +402,21 @@ export function parseOrderDeals(
 // its parent deal line was customized, and read the deal's note, without a second query.
 const dealOrderLineSelect = { dealName: true, customization: true, notes: true } satisfies Prisma.OrderDealLineSelect;
 
+// Table QR: which guest added a line (null for everything not from a table QR round).
+const tableGuestSelect = { select: { id: true, displayName: true } } as const;
+
 const orderItemInclude = {
   menuItem: { select: { id: true, name: true } },
   dealOrderLine: { select: dealOrderLineSelect },
+  tableGuest: tableGuestSelect,
 } satisfies Prisma.OrderItemInclude;
 
 const orderInclude = {
   items: { include: orderItemInclude },
-  dealLines: true,
+  dealLines: { include: { tableGuest: tableGuestSelect } },
+  // Table QR rounds: the session and the guest who sent the round.
+  tableSession: { select: { id: true, diningAreaId: true, status: true } },
+  tableGuest: tableGuestSelect,
   diningArea: true,
   // Added for the reception-review flow: the incoming-orders list and the
   // order:submitted socket payload both need the taker's/customer's name without a
@@ -499,6 +507,13 @@ export interface CreateOrderInput {
   // Only things the website offers may be ordered: an item must be available online and sellable
   // alone, a deal must be active, available online and have fixed contents.
   onlineOnly?: boolean;
+  // Table QR: only what the QR menu offers (isAvailableOnQr, sellable alone, not open-price; a deal
+  // active, isAvailableOnQr, with fixed contents). Set by the guest table route only.
+  qrOnly?: boolean;
+  // Table QR: the session this round belongs to and the guest who sent it. tableGuestId is also
+  // stamped on every line (direct items, deal lines and their exploded items).
+  tableSessionId?: string;
+  tableGuestId?: string;
   // Checked against the server-priced items+deals (before discount and fee).
   minSubtotal?: Prisma.Decimal;
   // Checked against the server-priced total (including the fee).
@@ -675,7 +690,7 @@ interface PendingExplodedItem {
 async function buildOrderLines(
   items: CreateOrderItemInput[],
   deals: CreateOrderDealInput[],
-  options: { onlineOnly?: boolean } = {},
+  options: { onlineOnly?: boolean; qrOnly?: boolean } = {},
 ) {
   // A deal's composition (DealItem rows) is loaded up front so exploding each ordered
   // deal into OrderItem rows needs no further queries inside the transaction.
@@ -706,6 +721,15 @@ async function buildOrderLines(
       }
     }
   }
+  if (options.qrOnly) {
+    // Same rule for the Table QR menu, on its own flag. A guest never sends a customized deal.
+    for (const item of items) {
+      const menuItem = menuItemById.get(item.menuItemId)!;
+      if (!menuItem.isAvailableOnQr || !menuItem.sellableAlone || menuItem.isOpenPrice) {
+        throw new ItemNotOrderableOnlineError(`menuItem ${menuItem.id} is not on the QR menu`);
+      }
+    }
+  }
 
   const addOnById = await loadAddOnById([...items, ...customizationItems]);
 
@@ -728,6 +752,13 @@ async function buildOrderLines(
     for (const deal of dealRows) {
       if (!deal.isActive || !deal.isAvailableOnline || deal.items.length === 0) {
         throw new ItemNotOrderableOnlineError(`deal ${deal.id} is not available to order online`);
+      }
+    }
+  }
+  if (options.qrOnly) {
+    for (const deal of dealRows) {
+      if (!deal.isActive || !deal.isAvailableOnQr || deal.items.length === 0) {
+        throw new ItemNotOrderableOnlineError(`deal ${deal.id} is not on the QR menu`);
       }
     }
   }
@@ -878,7 +909,10 @@ export async function createOrder(input: CreateOrderInput): Promise<OrderWithIte
 
   const { orderItemsCreateData, pendingDealLines } = await buildOrderLines(input.items, input.deals ?? [], {
     ...(input.onlineOnly ? { onlineOnly: true } : {}),
+    ...(input.qrOnly ? { qrOnly: true } : {}),
   });
+  // Table QR: every line records the guest who added it.
+  const guestTag = input.tableGuestId !== undefined ? { tableGuestId: input.tableGuestId } : {};
 
   const discount = input.discount ?? new Prisma.Decimal(0);
   const deliveryFee = input.deliveryFee ?? new Prisma.Decimal(0);
@@ -964,7 +998,9 @@ export async function createOrder(input: CreateOrderInput): Promise<OrderWithIte
         ...(input.clientIpHash !== undefined ? { clientIp: { create: { ipHash: input.clientIpHash } } } : {}),
         ...(input.clientRequestId !== undefined ? { clientRequestId: input.clientRequestId } : {}),
         ...(isScheduled ? { status: OrderStatus.SCHEDULED, scheduledFor: input.scheduledFor } : {}),
-        items: { create: orderItemsCreateData },
+        ...(input.tableSessionId !== undefined ? { tableSessionId: input.tableSessionId } : {}),
+        ...guestTag,
+        items: { create: orderItemsCreateData.map((item) => ({ ...item, ...guestTag })) },
       },
       include: orderInclude,
     });
@@ -987,6 +1023,7 @@ export async function createOrder(input: CreateOrderInput): Promise<OrderWithIte
           baseUnitPrice: line.baseUnitPrice,
           customization: line.customization,
           notes: line.notes,
+          ...guestTag,
         },
       });
 
@@ -1001,6 +1038,7 @@ export async function createOrder(input: CreateOrderInput): Promise<OrderWithIte
         variantId: item.variantId,
         variantLabel: item.variantLabel,
         addOns: item.addOns,
+        ...guestTag,
       }));
 
       await tx.orderItem.createMany({ data: explodedItemsData });
@@ -1051,6 +1089,7 @@ export async function createOrder(input: CreateOrderInput): Promise<OrderWithIte
     emitNewOrderItemsByKitchen(order);
   }
   // A SCHEDULED order emits nothing at all here — releaseScheduledOrder does, once, later.
+  await tableOrderChanged(order.tableSessionId);
 
   return order;
 }
@@ -1084,6 +1123,9 @@ function buildSubmittedPayload(order: OrderWithItems) {
     createdAt: order.createdAt,
     // Set only for a released scheduled order.
     scheduledFor: order.scheduledFor,
+    // Table QR rounds: which table session, and the guest's display name. Null otherwise.
+    tableSessionId: order.tableSessionId,
+    tableGuestName: order.tableGuest?.displayName ?? null,
   };
 }
 
@@ -1313,6 +1355,7 @@ export async function cancelOrder(id: string, input: CancelOrderInput): Promise<
 
   emitOrderCancelled(order, existing.items, existing.status !== OrderStatus.AWAITING_RECEPTION);
   emitOrderStatusToTaker(order);
+  await tableOrderChanged(order.tableSessionId);
   return order;
 }
 
@@ -1350,6 +1393,43 @@ export async function cancelOwnAwaitingOrder(id: string, staffId: string): Promi
   emitSafely(() => getIO().to("pos-admin").emit("order:updated", { orderId: updated.id, orderNumber: updated.orderNumber }));
   emitOrderStatusToTaker(updated);
   return updated;
+}
+
+// A Table QR guest withdrawing their own round while it still waits at reception. Same idea as
+// cancelOwnAwaitingOrder, but no staff member did it (cancelledById and the event's actor stay null)
+// and nothing can have been paid or deducted yet. Conditional on AWAITING_RECEPTION, so a round
+// reception is accepting at the same moment is never cancelled underneath it.
+export const TABLE_GUEST_CANCEL_REASON = "Cancelled by the guest";
+
+export async function cancelTableGuestRound(orderId: string, tableGuestId: string): Promise<OrderWithItems> {
+  const existing = await prisma.order.findFirst({ where: { id: orderId, tableGuestId, source: OrderSource.TABLE_QR } });
+  if (!existing) {
+    throw new OrderNotFoundError();
+  }
+  if (existing.status !== OrderStatus.AWAITING_RECEPTION) {
+    throw new OrderNotAwaitingReceptionError();
+  }
+  const order = await prisma.$transaction(async (tx) => {
+    const result = await tx.order.updateMany({
+      where: { id: orderId, status: OrderStatus.AWAITING_RECEPTION },
+      data: { status: OrderStatus.CANCELLED, cancelledReason: TABLE_GUEST_CANCEL_REASON, cancelledAt: new Date() },
+    });
+    if (result.count === 0) {
+      throw new OrderNotAwaitingReceptionError();
+    }
+    await recordOrderEvent(tx, {
+      orderId,
+      actorId: null,
+      type: OrderEventType.CANCELLED,
+      reason: TABLE_GUEST_CANCEL_REASON,
+      before: cancelSnapshot(existing),
+      after: { status: OrderStatus.CANCELLED, restocked: false, by: "table_guest" },
+    });
+    return tx.order.findUniqueOrThrow({ where: { id: orderId }, include: orderInclude });
+  });
+  emitSafely(() => getIO().to("pos-admin").emit("order:updated", { orderId: order.id, orderNumber: order.orderNumber }));
+  await tableOrderChanged(order.tableSessionId);
+  return order;
 }
 
 type OrderChangeSnapshot = {
@@ -1551,6 +1631,15 @@ export async function reviewOrderChange(changeId: string, reviewerId: string, ap
         data: { status: OrderChangeStatus.APPROVED, reviewedById: reviewerId, reviewedAt: new Date() },
       });
     });
+    // The edit deleted and recreated every line, so the kitchens drop the old cards and get the new
+    // ones — the same two events as removing and adding items. Only for an order that had reached
+    // the kitchens (one still at reception or on hold never did).
+    const reachedKitchens = order.status !== OrderStatus.AWAITING_RECEPTION && order.status !== OrderStatus.SCHEDULED;
+    if (reachedKitchens) {
+      emitItemsGone("order-item:removed", order, order.items, true);
+      const rebuilt = await prisma.order.findUniqueOrThrow({ where: { id: order.id }, include: orderInclude });
+      emitNewOrderItemsByKitchen(rebuilt);
+    }
     emitSafely(() => getIO().to("pos-admin").emit("order:updated", { orderId: order.id, orderNumber: order.orderNumber }));
     emitSafely(() => getIO().to(`user:${change.requestedById}`).emit("order:change-reviewed", {
       changeId: reviewed.id, orderId: order.id, status: reviewed.status,
@@ -1740,6 +1829,7 @@ export async function updateSubmission(orderId: string, input: UpdateSubmissionI
       io.to(`user:${updatedOrder.placedByStaffId}`).emit("order:updated", payload);
     }
   });
+  await tableOrderChanged(updatedOrder.tableSessionId);
 
   return updatedOrder;
 }
@@ -1770,6 +1860,9 @@ async function replaceOrderContents(
   }
 
   const { orderItemsCreateData, pendingDealLines } = await buildOrderLines(input.items, input.deals ?? []);
+  // A Table QR round keeps its guest tag through a reception edit: every rebuilt line belongs to the
+  // guest who sent the round (the tag lives on the order too, so it survives the wholesale replace).
+  const guestTag = existing.tableGuestId !== null ? { tableGuestId: existing.tableGuestId } : {};
   const discount = input.discount ?? existing.discount;
   const itemsTotal = orderItemsCreateData.reduce((sum, item) => sum.plus(item.subtotal), new Prisma.Decimal(0));
   const dealLinesTotal = pendingDealLines.reduce((sum, line) => sum.plus(line.subtotal), new Prisma.Decimal(0));
@@ -1814,7 +1907,7 @@ async function replaceOrderContents(
         ...(discountChange.changed && discountActor ? discountAttribution(discountActor, discountChange.reason) : {}),
         ...(input.notes !== undefined ? { notes: input.notes } : {}),
         ...(input.paymentMethod !== undefined ? { paymentMethod: input.paymentMethod } : {}),
-        items: { create: orderItemsCreateData },
+        items: { create: orderItemsCreateData.map((item) => ({ ...item, ...guestTag })) },
       },
     });
 
@@ -1841,6 +1934,7 @@ async function replaceOrderContents(
           baseUnitPrice: line.baseUnitPrice,
           customization: line.customization,
           notes: line.notes,
+          ...guestTag,
         },
       });
       const explodedItemsData = line.explodedItems.map((item) => ({
@@ -1854,6 +1948,7 @@ async function replaceOrderContents(
         variantId: item.variantId,
         variantLabel: item.variantLabel,
         addOns: item.addOns,
+        ...guestTag,
       }));
       await tx.orderItem.createMany({ data: explodedItemsData });
     }
@@ -2048,6 +2143,7 @@ export async function acceptOrder(
     }
   });
   emitOrderStatusToTaker(order);
+  await tableOrderChanged(order.tableSessionId);
 
   return order;
 }
@@ -2118,6 +2214,7 @@ export async function rejectOrder(orderId: string, input: RejectOrderInput, acto
     }
   });
   emitOrderStatusToTaker(order);
+  await tableOrderChanged(order.tableSessionId);
 
   return order;
 }
@@ -2229,6 +2326,7 @@ async function afterCompleted(existing: CompletionOrder): Promise<OrderWithItems
   emitSafely(() => getIO().to("pos-admin").emit("order:updated", { orderId: order.id, orderNumber: order.orderNumber }));
   emitItemsGone("order:completed", order, stillInKitchen, true);
   emitOrderStatusToTaker(order);
+  await tableOrderChanged(order.tableSessionId);
   return order;
 }
 
@@ -2611,6 +2709,7 @@ export async function addOrderItems(orderId: string, input: AddOrderItemsInput):
   // Only the newly added items are pushed to the kitchen(s) — the rest of the order
   // was already seen when it was first placed.
   emitNewOrderItemsByKitchen({ ...updatedOrder, items: createdItems });
+  await tableOrderChanged(updatedOrder.tableSessionId);
 
   return updatedOrder;
 }
@@ -2683,6 +2782,7 @@ export async function removeOrderItem(orderId: string, itemId: string, performed
   });
 
   emitItemsGone("order-item:removed", updatedOrder, [item], true);
+  await tableOrderChanged(updatedOrder.tableSessionId);
   return updatedOrder;
 }
 
@@ -2950,12 +3050,13 @@ export async function updateOrderItemStatus(itemId: string, status: OrderItemSta
   const updated = await prisma.orderItem.update({
     where: { id: itemId },
     data: { status },
-    include: { order: { select: { id: true, orderNumber: true } } },
+    include: { order: { select: { id: true, orderNumber: true, tableSessionId: true } } },
   });
 
   // Both the admin dashboard and that item's own kitchen display need this live —
   // a kitchen socket only ever joins its own kitchen:<id> room, never pos-admin.
   getIO().to("pos-admin").to(`kitchen:${updated.kitchenId}`).emit("order-item:updated", updated);
+  await tableOrderChanged(updated.order.tableSessionId);
 
   return updated;
 }

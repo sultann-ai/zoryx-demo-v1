@@ -53,6 +53,7 @@ export interface CreateMenuItemInput {
   imageUrl?: string;
   isAvailableInPOS?: boolean;
   isAvailableOnline?: boolean;
+  isAvailableOnQr?: boolean;
   isOpenPrice?: boolean;
   minPrice?: Prisma.Decimal | null;
   maxPrice?: Prisma.Decimal | null;
@@ -68,6 +69,7 @@ export interface UpdateMenuItemInput {
   imageUrl?: string | null;
   isAvailableInPOS?: boolean;
   isAvailableOnline?: boolean;
+  isAvailableOnQr?: boolean;
   isOpenPrice?: boolean;
   minPrice?: Prisma.Decimal | null;
   maxPrice?: Prisma.Decimal | null;
@@ -92,6 +94,21 @@ export async function listOnlineMenuItems() {
     orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
   });
   return attachAddOns(items);
+}
+
+// The Table QR menu: its own flag, independent of the website's. Open-price items never (a guest
+// must never set their own price); the order route enforces the same rule (qrOnly).
+export async function listQrMenuItems() {
+  const items = await prisma.menuItem.findMany({
+    where: { isAvailableOnQr: true, isOpenPrice: false },
+    include: { ...variantsInclude, image: { select: { hasTransparency: true } } },
+    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+  });
+  return attachAddOns(items);
+}
+
+export function setQrAvailability(id: string, isAvailableOnQr: boolean) {
+  return prisma.menuItem.update({ where: { id }, data: { isAvailableOnQr } });
 }
 
 export function listOnlineCategories() {
@@ -173,6 +190,7 @@ export async function createMenuItem(data: CreateMenuItemInput) {
       ...(data.imageUrl !== undefined ? { imageUrl: data.imageUrl } : {}),
       ...(data.isAvailableInPOS !== undefined ? { isAvailableInPOS: data.isAvailableInPOS } : {}),
       ...(data.isAvailableOnline !== undefined ? { isAvailableOnline: data.isAvailableOnline } : {}),
+      ...(data.isAvailableOnQr !== undefined ? { isAvailableOnQr: data.isAvailableOnQr } : {}),
       ...(data.isOpenPrice !== undefined ? { isOpenPrice: data.isOpenPrice } : {}),
       ...(data.minPrice !== undefined ? { minPrice: data.minPrice } : {}),
       ...(data.maxPrice !== undefined ? { maxPrice: data.maxPrice } : {}),
@@ -192,6 +210,7 @@ export function updateMenuItem(id: string, data: UpdateMenuItemInput) {
       ...(data.imageUrl !== undefined ? { imageUrl: data.imageUrl } : {}),
       ...(data.isAvailableInPOS !== undefined ? { isAvailableInPOS: data.isAvailableInPOS } : {}),
       ...(data.isAvailableOnline !== undefined ? { isAvailableOnline: data.isAvailableOnline } : {}),
+      ...(data.isAvailableOnQr !== undefined ? { isAvailableOnQr: data.isAvailableOnQr } : {}),
       ...(data.isOpenPrice !== undefined ? { isOpenPrice: data.isOpenPrice } : {}),
       ...(data.minPrice !== undefined ? { minPrice: data.minPrice } : {}),
       ...(data.maxPrice !== undefined ? { maxPrice: data.maxPrice } : {}),

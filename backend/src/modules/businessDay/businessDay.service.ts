@@ -1,4 +1,4 @@
-import { OrderStatus, Prisma } from "../../../generated/prisma/client";
+import { OrderStatus, Prisma, TableSessionStatus } from "../../../generated/prisma/client";
 import { prisma } from "../../config/prisma";
 import { UNPAID_ORDER_WHERE } from "../reports/salesDefinitions";
 
@@ -73,4 +73,19 @@ export function endBusinessDay(businessDayId: string, closedById: string) {
       closedById,
     },
   });
+}
+
+// Table QR: tables still seated on this day (they block ending it, without force).
+export async function getOpenTableSessions(businessDayId: string) {
+  const sessions = await prisma.tableSession.findMany({
+    where: { businessDayId, status: TableSessionStatus.OPEN },
+    select: { id: true, seatedAt: true, diningArea: { select: { name: true, area: true } }, _count: { select: { orders: true } } },
+    orderBy: { seatedAt: "asc" },
+  });
+  return sessions.map((session) => ({
+    id: session.id,
+    table: session.diningArea,
+    seatedAt: session.seatedAt,
+    orderCount: session._count.orders,
+  }));
 }

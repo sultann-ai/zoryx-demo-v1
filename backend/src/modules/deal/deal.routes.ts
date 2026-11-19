@@ -25,6 +25,13 @@ posDealRouter.patch(
   requireRole(StaffRole.POS_ADMIN, StaffRole.SUPER_ADMIN, StaffRole.ONLINE_ADMIN),
   dealController.patchOnlineContent,
 );
+// Table QR: "Show on QR menu".
+posDealRouter.patch(
+  "/:id/qr-availability",
+  requireAuth,
+  requireRole(StaffRole.POS_ADMIN, StaffRole.SUPER_ADMIN, StaffRole.ONLINE_ADMIN),
+  dealController.patchQrAvailability,
+);
 posDealRouter.delete(
   "/:id",
   requireAuth,

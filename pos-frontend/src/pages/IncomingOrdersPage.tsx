@@ -85,6 +85,7 @@ export function IncomingOrdersPage() {
   const counts = {
     all: visibleOrders.length,
     orderTaker: visibleOrders.filter((order) => order.source === "ORDER_TAKER").length,
+    tableQr: visibleOrders.filter((order) => order.source === "TABLE_QR").length,
     online: visibleOrders.filter((order) => order.source === "ONLINE").length,
     scheduled: visibleOrders.filter((order) => order.source === "POS").length,
   };

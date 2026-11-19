@@ -1,6 +1,8 @@
 import { Request, Response } from "express";
 import { DiningAreaType } from "../../../generated/prisma/client";
 import * as diningAreaService from "./diningArea.service";
+import { assertWaiter, TableStaffError } from "../table/tableSession.service";
+import { emitTableUpdated } from "../table/tableNotify";
 
 const VALID_TYPES = Object.values(DiningAreaType);
 
@@ -10,6 +12,41 @@ function isValidType(type: unknown): type is DiningAreaType {
 
 function isPositiveInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value > 0;
+}
+
+// Table QR fields (docs/TABLE_QR_SPEC.md): outOfService and defaultWaiterStaffId (an active order taker,
+// POS admin or super admin, or null). 400s and returns false on a bad value.
+async function readTableQrFields(
+  body: Record<string, unknown>,
+  res: Response,
+): Promise<{ ok: true; value: { outOfService?: boolean; defaultWaiterStaffId?: string | null } } | { ok: false }> {
+  const { outOfService, defaultWaiterStaffId } = body;
+  if (outOfService !== undefined && typeof outOfService !== "boolean") {
+    res.status(400).json({ error: "outOfService must be a boolean" });
+    return { ok: false };
+  }
+  if (defaultWaiterStaffId !== undefined && defaultWaiterStaffId !== null && typeof defaultWaiterStaffId !== "string") {
+    res.status(400).json({ error: "defaultWaiterStaffId must be a string or null" });
+    return { ok: false };
+  }
+  if (typeof defaultWaiterStaffId === "string") {
+    try {
+      await assertWaiter(defaultWaiterStaffId);
+    } catch (error) {
+      if (error instanceof TableStaffError) {
+        res.status(400).json({ error: "defaultWaiterStaffId must be an active order taker, POS admin or super admin" });
+        return { ok: false };
+      }
+      throw error;
+    }
+  }
+  return {
+    ok: true,
+    value: {
+      ...(outOfService !== undefined ? { outOfService } : {}),
+      ...(defaultWaiterStaffId !== undefined ? { defaultWaiterStaffId: defaultWaiterStaffId as string | null } : {}),
+    },
+  };
 }
 
 // 400s and returns false on a bad `area`; otherwise hands back the parsed value.
@@ -63,6 +100,10 @@ export async function createDiningArea(req: Request, res: Response) {
   if (!parsedArea.ok) {
     return;
   }
+  const tableQr = await readTableQrFields(req.body ?? {}, res);
+  if (!tableQr.ok) {
+    return;
+  }
 
   const diningArea = await diningAreaService.createDiningArea({
     name: name.trim(),
@@ -70,6 +111,7 @@ export async function createDiningArea(req: Request, res: Response) {
     ...(parsedArea.value !== undefined ? { area: parsedArea.value } : {}),
     ...(capacity !== undefined ? { capacity } : {}),
     ...(isActive !== undefined ? { isActive } : {}),
+    ...tableQr.value,
   });
   res.status(201).json(diningArea);
 }
@@ -98,6 +140,10 @@ export async function updateDiningArea(req: Request, res: Response) {
   if (!parsedArea.ok) {
     return;
   }
+  const tableQr = await readTableQrFields(req.body ?? {}, res);
+  if (!tableQr.ok) {
+    return;
+  }
 
   try {
     const diningArea = await diningAreaService.updateDiningArea(req.params.id as string, {
@@ -106,7 +152,12 @@ export async function updateDiningArea(req: Request, res: Response) {
       ...(parsedArea.value !== undefined ? { area: parsedArea.value } : {}),
       ...(capacity !== undefined ? { capacity } : {}),
       ...(isActive !== undefined ? { isActive } : {}),
+      ...tableQr.value,
     });
+    // Out of service (or back), or switched off: the floor map's tile changes.
+    if (tableQr.value.outOfService !== undefined || isActive !== undefined) {
+      await emitTableUpdated(diningArea.id);
+    }
     res.json(diningArea);
   } catch (error) {
     if (diningAreaService.isNotFoundError(error)) {

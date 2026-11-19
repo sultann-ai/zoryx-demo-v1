@@ -11,6 +11,8 @@ import { NewOrderPage } from "./pages/NewOrderPage";
 import { OrderDetailPage } from "./pages/OrderDetailPage";
 import { PrintKitchenTicketsPage } from "./pages/PrintKitchenTicketsPage";
 import { PrintReceiptPage } from "./pages/PrintReceiptPage";
+import { TablesPage } from "./pages/TablesPage";
+import { TakerCallsPage } from "./pages/TakerCallsPage";
 import { TakeOrderPage } from "./pages/TakeOrderPage";
 import { VendorDetailPage } from "./pages/VendorDetailPage";
 import { getHomeRoute } from "./routes/homeRoute";
@@ -53,13 +55,15 @@ function AppRoutes() {
         }
       />
 
-      {/* ORDER_TAKER accounts only ever see these two routes, under their own shell
+      {/* ORDER_TAKER accounts only ever see these routes (new order, my orders, the floor map, waiter calls), under their own shell
           (TakerShell) — no sidebar/AppLayout, same "no shared app shell" treatment as
           KITCHEN above. Any other URL bounces here via the "/" -> RootRedirect ->
           getHomeRoute chain, since ORDER_TAKER has no NAV_ITEMS entry to fall back to. */}
       <Route element={<ProtectedRoute allowedRoles={["ORDER_TAKER"]}><TakerShell /></ProtectedRoute>}>
         <Route path="/take-order" element={<TakeOrderPage />} />
         <Route path="/my-orders" element={<MyOrdersPage />} />
+        <Route path="/taker-tables" element={<TablesPage />} />
+        <Route path="/taker-calls" element={<TakerCallsPage />} />
       </Route>
 
       {/* Print views are standalone too — a clean printable page, no sidebar/top bar. */}

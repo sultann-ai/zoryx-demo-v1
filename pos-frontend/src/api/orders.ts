@@ -1,7 +1,9 @@
 import { apiClient } from "./client";
 import type { DiningAreaType } from "./diningAreas";
 
-export type OrderSource = "POS" | "ONLINE" | "PHONE" | "ORDER_TAKER";
+// TABLE_QR = a round a guest sent from the table's QR (docs/TABLE_QR_SPEC.md); reviewed at reception
+// exactly like an order-taker order.
+export type OrderSource = "POS" | "ONLINE" | "PHONE" | "ORDER_TAKER" | "TABLE_QR";
 export type OrderType = "DINE_IN" | "TAKEAWAY" | "DELIVERY";
 export type OrderStatus =
   | "PENDING"
@@ -64,8 +66,16 @@ export interface OrderItem {
   // Snapshotted at order time like variantLabel — null means no add-ons on this line.
   // unitPrice/subtotal already include each add-on's price, summed in once at order time.
   addOns: { addOnId: string; name: string; price: string }[] | null;
+  // Table QR: the guest whose round added this line; null for a staff-added line ("Table (shared)")
+  // and for every non-QR order.
+  tableGuest?: OrderTableGuest | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface OrderTableGuest {
+  id: string;
+  displayName: string;
 }
 
 export interface OrderItemDealLineInfo {
@@ -105,6 +115,8 @@ export interface OrderDealLine {
   customization: OrderDealLineCustomization | null;
   // Note for the deal line as a whole — same rules as OrderItem.notes.
   notes: string | null;
+  // Table QR: as OrderItem.tableGuest.
+  tableGuest?: OrderTableGuest | null;
   createdAt: string;
 }
 
@@ -178,6 +190,9 @@ export interface OrderDetail extends OrderBase {
   placedByStaff: { id: string; name: string } | null;
   customer: { id: string; name: string; phone: string } | null;
   customerAddress: { id: string; addressText: string } | null;
+  // Table QR rounds only: the table's session and the guest who sent the round.
+  tableSession?: { id: string; diningAreaId: string; status: "OPEN" | "CLOSED" | "VOIDED" } | null;
+  tableGuest?: OrderTableGuest | null;
 }
 
 export interface ListOrdersFilter {

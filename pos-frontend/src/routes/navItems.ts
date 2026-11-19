@@ -17,6 +17,8 @@ import { PaymentAccountsPage } from "../pages/onlineStore/PaymentAccountsPage";
 import { ReportsPage } from "../pages/ReportsPage";
 import { ScheduledOrdersPage } from "../pages/ScheduledOrdersPage";
 import { StaffPage } from "../pages/StaffPage";
+import { TableLayoutPage } from "../pages/TableLayoutPage";
+import { TablesPage } from "../pages/TablesPage";
 import { StoreSettingsPage } from "../pages/onlineStore/StoreSettingsPage";
 import { TestimonialsPage } from "../pages/onlineStore/TestimonialsPage";
 import { VendorsPage } from "../pages/VendorsPage";
@@ -70,6 +72,16 @@ export const NAV_ITEMS: NavItem[] = [
     page: DashboardPage,
     icon: "dashboard",
     group: "Insights",
+  },
+  // The live floor map (Table QR). ORDER_TAKER reaches the same page from TakerShell's "Tables" tab
+  // (/taker-tables, App.tsx) — that role has no sidebar.
+  {
+    to: "/tables",
+    label: "Tables",
+    allowedRoles: ["SUPER_ADMIN", "POS_ADMIN"],
+    page: TablesPage,
+    icon: "tables",
+    group: "Operations",
   },
   {
     to: "/incoming-orders",
@@ -176,6 +188,14 @@ export const NAV_ITEMS: NavItem[] = [
     allowedRoles: ["SUPER_ADMIN", "POS_ADMIN"],
     page: DiningAreasPage,
     icon: "diningAreas",
+    group: "Setup",
+  },
+  {
+    to: "/tables/layout",
+    label: "Table layout",
+    allowedRoles: ["SUPER_ADMIN", "POS_ADMIN"],
+    page: TableLayoutPage,
+    icon: "layout",
     group: "Setup",
   },
   {

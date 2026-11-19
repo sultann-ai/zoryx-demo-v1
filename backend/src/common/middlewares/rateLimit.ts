@@ -1,5 +1,6 @@
+import { createHash } from "crypto";
 import { Request, Response } from "express";
-import rateLimit, { Options } from "express-rate-limit";
+import rateLimit, { ipKeyGenerator, Options } from "express-rate-limit";
 
 // In-memory, per-IP, per-process counters. Fine for the auth endpoints; order-placement limits
 // will live in Postgres in a later module. Each limiter below is its own instance, so each has
@@ -52,7 +53,10 @@ export const onlineGeneralLimiter = createLimiter({
     req.path.startsWith("/payment") ||
     req.path.startsWith("/media") ||
     req.path.startsWith("/guest-orders") ||
-    req.path.startsWith("/orders"),
+    req.path.startsWith("/orders") ||
+    // Table QR: a whole restaurant's guests share one Wi-Fi IP, so these have their own limiters
+    // (below), most of them keyed by the guest's token rather than the IP.
+    req.path.startsWith("/table"),
 });
 
 export const mediaLimiter = createLimiter({ limit: MEDIA_REQUESTS_PER_WINDOW });
@@ -60,3 +64,23 @@ export const mediaLimiter = createLimiter({ limit: MEDIA_REQUESTS_PER_WINDOW });
 export const guestOrderLimiter = createLimiter({ limit: GUEST_ORDER_REQUESTS_PER_WINDOW });
 export const proofUploadLimiter = createLimiter({ limit: PROOF_UPLOADS_PER_WINDOW });
 export const orderStatusLimiter = createLimiter({ limit: ORDER_STATUS_REQUESTS_PER_WINDOW });
+
+// ---------- Table QR (docs/TABLE_QR_SPEC.md §5.3) ----------
+// The real order/join limits are counted in Postgres (tableGuest module); these only blunt floods.
+// IP-keyed ones get large budgets because one restaurant Wi-Fi IP carries every table's guests.
+export const tableLookupLimiter = createLimiter({ limit: 300 });
+export const qrMenuLimiter = createLimiter({ limit: 1000 });
+export const tableJoinLimiter = createLimiter({ limit: 60 });
+
+// Keyed by the guest's token (hashed, never stored), falling back to the IP when there is none.
+function tableTokenKey(req: Request): string {
+  const token = req.headers["x-table-token"];
+  if (typeof token === "string" && token.length > 0) {
+    return `table-token:${createHash("sha256").update(token).digest("hex")}`;
+  }
+  return ipKeyGenerator(req.ip ?? "unknown");
+}
+
+// The poll runs every 5 s while a guest watches (180 per 15 min); this leaves room for refetches.
+export const tablePollLimiter = createLimiter({ limit: 600, keyGenerator: tableTokenKey });
+export const tableActionLimiter = createLimiter({ limit: 120, keyGenerator: tableTokenKey });

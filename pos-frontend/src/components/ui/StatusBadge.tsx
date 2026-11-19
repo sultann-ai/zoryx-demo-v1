@@ -88,6 +88,9 @@ function formatStatusLabel(status: string): string {
 export interface StatusBadgeProps {
   status: string;
   label?: string;
+  // Overrides the tone looked up from `status` — for a state that isn't an order/payment enum
+  // (the floor map's table states, see pages/tables/tableStates.ts).
+  tone?: StatusTone;
   className?: string;
   // "lg" is for the Kitchen Display only — same tone map and dot+label shape,
   // scaled up for a screen read from a few feet away.
@@ -103,8 +106,8 @@ const SIZE_CLASSES: Record<"sm" | "lg", { wrapper: string; dot: string }> = {
 
 // A dot + word, deliberately quiet — never a shouting filled pill. See the
 // plan: color is a convenience for fast recognition, never the only signal.
-export function StatusBadge({ status, label, className, size = "sm" }: StatusBadgeProps) {
-  const tone = toneForStatus(status);
+export function StatusBadge({ status, label, tone: toneOverride, className, size = "sm" }: StatusBadgeProps) {
+  const tone = toneOverride ?? toneForStatus(status);
   const { dot, text } = TONE_CLASSES[tone];
   const { wrapper, dot: dotSize } = SIZE_CLASSES[size];
   return (

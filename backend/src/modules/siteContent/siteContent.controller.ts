@@ -47,6 +47,15 @@ export async function updateSiteSettings(req: Request, res: Response) {
     res.status(403).json({ error: "Only a Super Admin or POS Admin can change how takeaway orders are completed" });
     return;
   }
+  // Ordering from the table is a dine-in (POS) decision, not the website's.
+  if (
+    ("tableQrEnabled" in parsed.value || "tableQrRequirePin" in parsed.value) &&
+    req.staff?.role !== StaffRole.SUPER_ADMIN &&
+    req.staff?.role !== StaffRole.POS_ADMIN
+  ) {
+    res.status(403).json({ error: "Only a Super Admin or POS Admin can change table QR ordering" });
+    return;
+  }
   try {
     res.json(await service.updateSiteSettings(parsed.value));
   } catch (error) {

@@ -2,9 +2,11 @@ import { NavLink, Outlet } from "react-router-dom";
 import { BrandLogo } from "./BrandLogo";
 import { useAuth } from "../context/AuthContext";
 import { TakerOrdersProvider, useTakerOrdersContext } from "../context/TakerOrdersContext";
+import { useTableCallsContext } from "../context/TableCallsContext";
 import { Button } from "./ui";
 import { cn } from "./ui/cn";
 import { Icon } from "./shell/icons";
+import { IconWithBadge, NavCountBadge } from "./shell/NavCountBadge";
 
 const TAB_CLASSES =
   "flex h-16 min-w-0 flex-1 flex-col items-center justify-center gap-1 border-t-2 px-1 text-meta font-medium no-underline transition-colors " +
@@ -55,6 +57,7 @@ function TakerTopBar() {
 }
 
 function TakerBottomNav() {
+  const { badgeCount } = useTableCallsContext();
   return (
     <nav aria-label="Primary" className="flex shrink-0 border-t border-border bg-surface-raised">
       <NavLink to="/take-order" end className={({ isActive }) => cn(TAB_CLASSES, tabState(isActive))}>
@@ -65,13 +68,28 @@ function TakerBottomNav() {
         <Icon name="list" />
         <span>My orders</span>
       </NavLink>
+      <NavLink to="/taker-tables" className={({ isActive }) => cn(TAB_CLASSES, tabState(isActive))}>
+        <Icon name="tables" />
+        <span>Tables</span>
+      </NavLink>
+      <NavLink to="/taker-calls" className={({ isActive }) => cn(TAB_CLASSES, tabState(isActive))}>
+        <IconWithBadge
+          icon={<Icon name="bell" />}
+          badge={
+            badgeCount > 0 && (
+              <NavCountBadge count={badgeCount} tone="danger" label={`${badgeCount} waiting for a waiter`} className="px-1.5" />
+            )
+          }
+        />
+        <span>Calls</span>
+      </NavLink>
     </nav>
   );
 }
 
 // ORDER_TAKER's own standalone shell — no sidebar, no AppLayout, same "own shell, no
 // shared nav" treatment KITCHEN gets. Owns the one socket connection/chime (via
-// TakerOrdersProvider) so both /take-order and /my-orders share one connection state.
+// TakerOrdersProvider, which also hosts TableCallsProvider) so every tab shares one connection.
 export function TakerShell() {
   return (
     <TakerOrdersProvider>

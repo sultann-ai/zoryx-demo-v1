@@ -7,7 +7,7 @@ import { NAV_ITEMS, NEW_TAB_NAV_ITEMS } from "./navItems";
 // "pushed" full-screen views for list -> detail. The desktop sidebar keeps
 // using NAV_ITEMS directly and doesn't read any of this.
 
-export type ShellIconName = "dashboard" | "orders" | "newOrder" | "inventory" | "list";
+export type ShellIconName = "dashboard" | "orders" | "newOrder" | "inventory" | "tables" | "list";
 
 export interface ShellDestination {
   to: string;
@@ -20,11 +20,11 @@ export interface ShellTab extends ShellDestination {
   icon: ShellIconName;
 }
 
-// Most-used first. Dashboard and Orders are checked constantly; "New order" is
-// the action a cashier repeats all shift, so it gets its own tab rather than
-// hiding behind Orders; Inventory is the fourth because stock gets checked and
-// adjusted through the shift, while Menu/Categories/Reports are occasional.
-const PREFERRED_TAB_ORDER = ["/dashboard", "/orders", "/orders/new", "/inventory"];
+// Most-used first. Dashboard and Orders are checked constantly; Tables (the live floor map) sits
+// right after Dashboard, per the Table QR spec, since it's watched all service; "New order" is the
+// action a cashier repeats all shift, so it gets its own tab rather than hiding behind Orders.
+// Inventory moved to More to make room — stock is checked a few times a shift, the floor constantly.
+const PREFERRED_TAB_ORDER = ["/dashboard", "/tables", "/orders", "/orders/new"];
 const MAX_TABS = 4;
 
 const TAB_ICONS: Record<string, ShellIconName> = {
@@ -32,6 +32,7 @@ const TAB_ICONS: Record<string, ShellIconName> = {
   "/orders": "orders",
   "/orders/new": "newOrder",
   "/inventory": "inventory",
+  "/tables": "tables",
 };
 
 export function getShellNav(role: StaffRole): { tabs: ShellTab[]; more: ShellDestination[] } {

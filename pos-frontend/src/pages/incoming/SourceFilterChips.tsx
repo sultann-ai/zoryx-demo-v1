@@ -2,12 +2,12 @@ import { cn } from "../../components/ui/cn";
 
 // POS = a scheduled POS order that has just been released (the only way a POS order
 // reaches Incoming).
-export type SourceFilter = "ALL" | "ORDER_TAKER" | "ONLINE" | "POS";
+export type SourceFilter = "ALL" | "ORDER_TAKER" | "TABLE_QR" | "ONLINE" | "POS";
 
 interface SourceFilterChipsProps {
   value: SourceFilter;
   onChange: (value: SourceFilter) => void;
-  counts: { all: number; orderTaker: number; online: number; scheduled: number };
+  counts: { all: number; orderTaker: number; tableQr: number; online: number; scheduled: number };
 }
 
 const CHIP_CLASSES =
@@ -27,6 +27,8 @@ export function SourceFilterChips({ value, onChange, counts }: SourceFilterChips
   const options: { id: SourceFilter; label: string; count: number }[] = [
     { id: "ALL", label: "All", count: counts.all },
     { id: "ORDER_TAKER", label: "Order takers", count: counts.orderTaker },
+    // Guests' rounds from a table's QR — shown while there's one, like Scheduled (QR ordering may be off).
+    ...(counts.tableQr > 0 || value === "TABLE_QR" ? [{ id: "TABLE_QR" as const, label: "Table QR", count: counts.tableQr }] : []),
     { id: "ONLINE", label: "Online", count: counts.online },
     // Only shown while there's one to filter to — most days there are none.
     ...(counts.scheduled > 0 || value === "POS" ? [{ id: "POS" as const, label: "Scheduled", count: counts.scheduled }] : []),

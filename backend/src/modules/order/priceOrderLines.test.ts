@@ -29,6 +29,7 @@ function menuItem(over: Partial<MenuItemWithVariants> & { id: string }): MenuIte
     sortOrder: 0,
     isAvailableInPOS: true,
     isAvailableOnline: true,
+    isAvailableOnQr: false,
     createdAt: new Date(0),
     updatedAt: new Date(0),
     variants: [],

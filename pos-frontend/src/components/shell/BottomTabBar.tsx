@@ -1,10 +1,12 @@
 import { useState } from "react";
 import { NavLink, matchPath, useLocation } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
+import { useTableCallsContext } from "../../context/TableCallsContext";
 import { getShellNav } from "../../routes/mobileShell";
 import { cn } from "../ui/cn";
 import { Icon } from "./icons";
 import { MoreMenu } from "./MoreMenu";
+import { IconWithBadge, NavCountBadge } from "./NavCountBadge";
 
 // 64px tall, edge to edge: well past the plan's 44px minimum, since these are
 // the most-tapped controls on a phone. The focus ring is inset because
@@ -28,6 +30,7 @@ export function BottomTabBar() {
   const { staff, logout } = useAuth();
   const { pathname } = useLocation();
   const [isMoreOpen, setIsMoreOpen] = useState(false);
+  const { badgeCount: openCallsCount } = useTableCallsContext();
 
   if (!staff) {
     return null;
@@ -41,7 +44,15 @@ export function BottomTabBar() {
       <nav aria-label="Primary" className="flex shrink-0 border-t border-border bg-surface-raised md:hidden">
         {tabs.map((tab) => (
           <NavLink key={tab.to} to={tab.to} end className={({ isActive }) => cn(TAB_CLASSES, tabState(isActive))}>
-            <Icon name={tab.icon} />
+            <IconWithBadge
+              icon={<Icon name={tab.icon} />}
+              badge={
+                tab.to === "/tables" &&
+                openCallsCount > 0 && (
+                  <NavCountBadge count={openCallsCount} tone="danger" label={`${openCallsCount} waiting for a waiter`} className="px-1.5" />
+                )
+              }
+            />
             <span className="max-w-full truncate">{tab.label}</span>
           </NavLink>
         ))}

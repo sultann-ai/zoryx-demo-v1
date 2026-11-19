@@ -212,6 +212,24 @@ export async function updateDeal(req: Request, res: Response) {
   }
 }
 
+// PATCH /:id/qr-availability — "Show on QR menu" (Table QR).
+export async function patchQrAvailability(req: Request, res: Response) {
+  const { isAvailableOnQr, ...rest } = (req.body ?? {}) as Record<string, unknown>;
+  if (Object.keys(rest).length > 0 || typeof isAvailableOnQr !== "boolean") {
+    res.status(400).json({ error: "Send { isAvailableOnQr: boolean }" });
+    return;
+  }
+  try {
+    res.json(await dealService.setQrAvailability(req.params.id as string, isAvailableOnQr));
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025") {
+      res.status(404).json({ error: "Deal not found" });
+      return;
+    }
+    throw error;
+  }
+}
+
 export async function deleteDeal(req: Request, res: Response) {
   try {
     await dealService.deleteDeal(req.params.id as string);

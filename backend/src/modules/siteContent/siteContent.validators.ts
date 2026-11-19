@@ -98,6 +98,10 @@ const SITE_SETTINGS_SPECS: FieldSpecs = {
   maxDiscountPercentPosAdmin: percent("maxDiscountPercentPosAdmin"),
   // A POS setting (complete a takeaway when it's paid) — SUPER_ADMIN/POS_ADMIN only (controller).
   autoCompleteTakeawayOnPayment: bool("autoCompleteTakeawayOnPayment"),
+  // Table QR (POS settings, SUPER_ADMIN/POS_ADMIN only — controller): the master switch, and whether
+  // newly seated tables get a join PIN.
+  tableQrEnabled: bool("tableQrEnabled"),
+  tableQrRequirePin: bool("tableQrRequirePin"),
 };
 
 export function parseSiteSettingsUpdate(body: Record<string, unknown>) {

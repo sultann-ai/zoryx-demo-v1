@@ -20,6 +20,11 @@ export type IconName =
   | "staff"
   | "incoming"
   | "scheduled"
+  // Table QR: the live floor map and its layout editor.
+  | "tables"
+  | "layout"
+  // Waiter calls (the order taker's Calls tab).
+  | "bell"
   // Online store section.
   | "photo"
   | "settings"
@@ -116,6 +121,35 @@ const PATHS: Record<IconName, ReactNode> = {
       <line x1="2" y1="10" x2="4" y2="10" />
       <line x1="20" y1="10" x2="22" y2="10" />
       <path d="M8 10V7a4 4 0 0 1 8 0v3" />
+    </>
+  ),
+  // Two tables seen from above (one round, one square) with chairs, for the live floor map.
+  tables: (
+    <>
+      <circle cx="7" cy="8" r="3.5" />
+      <rect x="13" y="13" width="7" height="7" rx="1" />
+      <line x1="7" y1="14.5" x2="7" y2="16.5" />
+      <line x1="16.5" y1="8" x2="16.5" y2="10" />
+      <line x1="2" y1="20" x2="9" y2="20" />
+    </>
+  ),
+  // A service bell, for waiter calls.
+  bell: (
+    <>
+      <path d="M6 16a6 6 0 0 1 12 0" />
+      <line x1="4" y1="16" x2="20" y2="16" />
+      <line x1="12" y1="8" x2="12" y2="10" />
+      <line x1="10" y1="8" x2="14" y2="8" />
+      <line x1="3" y1="19" x2="21" y2="19" />
+    </>
+  ),
+  // A floor plan with a drag handle, for the table layout editor.
+  layout: (
+    <>
+      <rect x="3" y="3" width="18" height="18" rx="1" />
+      <rect x="6.5" y="6.5" width="5" height="5" />
+      <circle cx="16" cy="15.5" r="2.5" />
+      <line x1="11.5" y1="11.5" x2="14" y2="14" />
     </>
   ),
   // A tabletop on two legs, for Dining Areas.

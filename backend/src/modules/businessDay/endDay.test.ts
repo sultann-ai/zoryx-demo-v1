@@ -32,6 +32,7 @@ describe("POST /business-day/end with unpaid orders", () => {
   it("lists the unpaid orders by number and amount before it lets the day end", async () => {
     vi.spyOn(service, "getActiveBusinessDay").mockResolvedValue({ id: "day-1" } as Awaited<ReturnType<typeof service.getActiveBusinessDay>>);
     vi.spyOn(service, "getBlockingOrders").mockResolvedValue([]);
+    vi.spyOn(service, "getOpenTableSessions").mockResolvedValue([]);
     vi.spyOn(service, "getUnpaidOrders").mockResolvedValue({
       orders: [
         { id: "o-7", orderNumber: 7, totalAmount: new Prisma.Decimal(1200), status: "COMPLETED", paymentMethod: "CASH" },
@@ -49,6 +50,28 @@ describe("POST /business-day/end with unpaid orders", () => {
       code: "UNPAID_ORDERS",
       error: "Cannot end business day: 2 order(s) are not marked paid (Rs 1550.00, not counted in sales)",
       unpaidOrders: [{ orderNumber: 7 }, { orderNumber: 9 }],
+    });
+    expect(end).not.toHaveBeenCalled();
+  });
+
+  it("lists tables still seated (Table QR) and refuses with OPEN_TABLE_SESSIONS when nothing else blocks", async () => {
+    vi.spyOn(service, "getActiveBusinessDay").mockResolvedValue({ id: "day-1" } as Awaited<ReturnType<typeof service.getActiveBusinessDay>>);
+    vi.spyOn(service, "getBlockingOrders").mockResolvedValue([]);
+    vi.spyOn(service, "getUnpaidOrders").mockResolvedValue({ orders: [], total: new Prisma.Decimal(0) });
+    const seatedAt = new Date("2026-11-19T10:00:00Z");
+    vi.spyOn(service, "getOpenTableSessions").mockResolvedValue([
+      { id: "s-1", table: { name: "Table 5", area: "Family Hall" }, seatedAt, orderCount: 0 },
+    ]);
+    const end = vi.spyOn(service, "endBusinessDay");
+    const { res, response } = fakeResponse();
+
+    await controller.end(request({}), response);
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toMatchObject({
+      code: "OPEN_TABLE_SESSIONS",
+      error: "Cannot end business day: 1 table(s) are still seated",
+      openTableSessions: [{ id: "s-1", table: { name: "Table 5" } }],
     });
     expect(end).not.toHaveBeenCalled();
   });

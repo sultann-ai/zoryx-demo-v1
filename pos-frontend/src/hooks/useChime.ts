@@ -54,10 +54,14 @@ export function useChime(storageKey: string): UseChimeResult {
   const [isMuted, setIsMuted] = useState(() => getStoredMuted(storageKey));
   const [needsUnlock, setNeedsUnlock] = useState(false);
   const audioContextRef = useRef<AudioContext | null>(null);
+  // Socket handlers keep the chime they were registered with for the whole connection, so it reads
+  // the mute setting from a ref — otherwise "Mute" only took effect after a reload.
+  const isMutedRef = useRef(isMuted);
 
   const toggleMute = useCallback(() => {
     setIsMuted((prev) => {
       setStoredMuted(storageKey, !prev);
+      isMutedRef.current = !prev;
       return !prev;
     });
   }, [storageKey]);
@@ -77,7 +81,7 @@ export function useChime(storageKey: string): UseChimeResult {
   }
 
   function chime() {
-    if (isMuted) {
+    if (isMutedRef.current) {
       return;
     }
     const audioContext = ensureAudioContext();

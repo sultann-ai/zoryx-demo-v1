@@ -5,6 +5,7 @@ import type { Socket } from "socket.io-client";
 import { connectSocket } from "../socket/client";
 import { useChime } from "../hooks/useChime";
 import { useAuth } from "./AuthContext";
+import { TableCallsProvider } from "./TableCallsContext";
 
 const MUTED_STORAGE_KEY = "zoryx:take-order-muted";
 
@@ -22,7 +23,7 @@ interface OrderLifecyclePayload {
   orderId: string;
 }
 
-// Mounted once in TakerShell, alive for both /take-order and /my-orders. Owns the one
+// Mounted once in TakerShell, alive for every taker tab. Owns the one
 // socket connection for this role — no "join" emit: the server auto-joins an
 // ORDER_TAKER socket to user:<staffId> unconditionally on connect (see the backend's
 // socket.ts), so there's nothing to request here, just events to listen for.
@@ -33,6 +34,8 @@ export function TakerOrdersProvider({ children }: { children: ReactNode }) {
     navigator.onLine ? "reconnecting" : "offline",
   );
   const { chime, isMuted, toggleMute, needsUnlock, unlock } = useChime(MUTED_STORAGE_KEY);
+  // Shared with TableCallsProvider (waiter calls, the Tables tab), so the phone keeps one connection.
+  const [socket, setSocket] = useState<Socket | null>(null);
 
   useEffect(() => {
     function handleOnline() {
@@ -55,6 +58,7 @@ export function TakerOrdersProvider({ children }: { children: ReactNode }) {
     }
 
     const socket: Socket = connectSocket(token);
+    setSocket(socket);
 
     function refetchMine() {
       queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
@@ -95,13 +99,16 @@ export function TakerOrdersProvider({ children }: { children: ReactNode }) {
       socket.off("order:rejected", handleLifecycleEvent);
       socket.off("order:status", handleLifecycleEvent);
       socket.disconnect();
+      setSocket(null);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
   return (
     <TakerOrdersContext.Provider value={{ connectionStatus, isMuted, toggleMute }}>
-      {children}
+      <TableCallsProvider socket={socket} chime={chime} vibrate>
+        {children}
+      </TableCallsProvider>
       {needsUnlock && (
         <button
           type="button"

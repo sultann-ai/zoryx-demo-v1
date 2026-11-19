@@ -7,6 +7,7 @@ import { connectSocket } from "../socket/client";
 import { useChime } from "../hooks/useChime";
 import { useIncomingOrders as useIncomingOrdersQuery } from "../hooks/useOrders";
 import { useAuth } from "./AuthContext";
+import { TableCallsProvider } from "./TableCallsContext";
 import type { OrderDetail } from "../api/orders";
 
 const MUTED_STORAGE_KEY = "zoryx:incoming-orders-muted";
@@ -22,6 +23,8 @@ export interface IncomingOrderToast {
   id: string;
   orderNumber: number;
   source: string;
+  // Table QR rounds: who sent it.
+  tableGuestName: string | null;
 }
 
 interface IncomingOrdersContextValue {
@@ -42,6 +45,7 @@ interface OrderSubmittedPayload {
   orderId: string;
   orderNumber: number;
   source: string;
+  tableGuestName?: string | null;
 }
 
 interface OrderLifecyclePayload {
@@ -67,6 +71,10 @@ export function IncomingOrdersProvider({ children }: { children: ReactNode }) {
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("reconnecting");
   const { chime, isMuted, toggleMute, needsUnlock: needsAudioUnlock, unlock: unlockAudio } = useChime(MUTED_STORAGE_KEY);
   const [toasts, setToasts] = useState<IncomingOrderToast[]>([]);
+  // Shared with TableCallsProvider (waiter calls, the floor map), so this shell keeps one connection.
+  const [socket, setSocket] = useState<Socket | null>(null);
+  // The toast column; waiter-call toasts are rendered into it too, so the two kinds never overlap.
+  const [toastRegion, setToastRegion] = useState<HTMLDivElement | null>(null);
 
   const dismissToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((toast) => toast.id !== id));
@@ -78,6 +86,7 @@ export function IncomingOrdersProvider({ children }: { children: ReactNode }) {
     }
 
     const socket: Socket = connectSocket(token);
+    setSocket(socket);
 
     function refetchIncoming() {
       queryClient.invalidateQueries({ queryKey: ["orders", "incoming"] });
@@ -97,7 +106,10 @@ export function IncomingOrdersProvider({ children }: { children: ReactNode }) {
       // A released scheduled order leaves the Scheduled list at the same moment.
       queryClient.invalidateQueries({ queryKey: ["orders", "scheduled"] });
       chime();
-      setToasts((prev) => [...prev, { id: payload.orderId, orderNumber: payload.orderNumber, source: payload.source }]);
+      setToasts((prev) => [
+        ...prev,
+        { id: payload.orderId, orderNumber: payload.orderNumber, source: payload.source, tableGuestName: payload.tableGuestName ?? null },
+      ]);
     }
 
     function handleLifecycleEvent(_payload: OrderLifecyclePayload) {
@@ -141,6 +153,7 @@ export function IncomingOrdersProvider({ children }: { children: ReactNode }) {
       socket.off("order:rejected", handleLifecycleEvent);
       socket.off("order:change-requested", refetchChanges);
       socket.disconnect();
+      setSocket(null);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canReview, token]);
@@ -163,7 +176,9 @@ export function IncomingOrdersProvider({ children }: { children: ReactNode }) {
 
   return (
     <IncomingOrdersContext.Provider value={value}>
-      {children}
+      <TableCallsProvider socket={socket} chime={chime} toastRegion={toastRegion}>
+        {children}
+      </TableCallsProvider>
       {needsAudioUnlock && (
         <button
           type="button"
@@ -173,15 +188,26 @@ export function IncomingOrdersProvider({ children }: { children: ReactNode }) {
           Tap to enable sound for incoming orders
         </button>
       )}
-      {toasts.length > 0 && (
-        <div className="fixed right-4 top-4 z-50 flex flex-col gap-2">
-          {toasts.map((toast) => (
-            <IncomingOrderToastCard key={toast.id} toast={toast} onDismiss={() => dismissToast(toast.id)} />
-          ))}
-        </div>
-      )}
+      <div ref={setToastRegion} className="fixed right-4 top-4 z-50 flex flex-col gap-2">
+        {toasts.map((toast) => (
+          <IncomingOrderToastCard key={toast.id} toast={toast} onDismiss={() => dismissToast(toast.id)} />
+        ))}
+      </div>
     </IncomingOrdersContext.Provider>
   );
+}
+
+function toastSourceLabel(toast: IncomingOrderToast): string {
+  switch (toast.source) {
+    case "ORDER_TAKER":
+      return "order taker";
+    case "POS":
+      return "scheduled order released";
+    case "TABLE_QR":
+      return toast.tableGuestName ? `table QR · ${toast.tableGuestName}` : "table QR";
+    default:
+      return "online";
+  }
 }
 
 function IncomingOrderToastCard({ toast, onDismiss }: { toast: IncomingOrderToast; onDismiss: () => void }) {
@@ -192,8 +218,7 @@ function IncomingOrderToastCard({ toast, onDismiss }: { toast: IncomingOrderToas
       className="flex w-72 items-start justify-between gap-2 rounded-card border border-border bg-surface-raised px-4 py-3 text-body text-ink no-underline shadow-md"
     >
       <span>
-        New order #{toast.orderNumber} waiting (
-        {toast.source === "ORDER_TAKER" ? "order taker" : toast.source === "POS" ? "scheduled order released" : "online"})
+        New order #{toast.orderNumber} waiting ({toastSourceLabel(toast)})
       </span>
       <button
         type="button"
@@ -203,7 +228,8 @@ function IncomingOrderToastCard({ toast, onDismiss }: { toast: IncomingOrderToas
           onDismiss();
         }}
         aria-label="Dismiss"
-        className="shrink-0 text-ink-muted hover:text-ink"
+        // Preflight is off app-wide, so a bare <button> keeps the browser's grey box without this.
+        className="shrink-0 cursor-pointer border-0 bg-transparent p-0 font-body text-body text-ink-muted hover:text-ink"
       >
         ×
       </button>

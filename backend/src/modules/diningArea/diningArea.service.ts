@@ -31,6 +31,8 @@ export interface CreateDiningAreaInput {
   area?: string | null;
   capacity?: number;
   isActive?: boolean;
+  outOfService?: boolean;
+  defaultWaiterStaffId?: string | null;
 }
 
 export interface UpdateDiningAreaInput {
@@ -39,14 +41,20 @@ export interface UpdateDiningAreaInput {
   area?: string | null;
   capacity?: number | null;
   isActive?: boolean;
+  outOfService?: boolean;
+  defaultWaiterStaffId?: string | null;
 }
 
+// The table's QR key is never in these responses — ORDER_TAKER reads them. Only the QR sheet and
+// regenerate endpoints (SA/PA) hand it out.
+const hideQrKey = { qrKey: true } as const;
+
 export function listDiningAreas() {
-  return prisma.diningArea.findMany({ orderBy: { name: "asc" } });
+  return prisma.diningArea.findMany({ orderBy: { name: "asc" }, omit: hideQrKey });
 }
 
 export function getDiningAreaById(id: string) {
-  return prisma.diningArea.findUnique({ where: { id } });
+  return prisma.diningArea.findUnique({ where: { id }, omit: hideQrKey });
 }
 
 export function createDiningArea(data: CreateDiningAreaInput) {
@@ -57,7 +65,10 @@ export function createDiningArea(data: CreateDiningAreaInput) {
       ...(data.area !== undefined ? { area: data.area } : {}),
       ...(data.capacity !== undefined ? { capacity: data.capacity } : {}),
       ...(data.isActive !== undefined ? { isActive: data.isActive } : {}),
+      ...(data.outOfService !== undefined ? { outOfService: data.outOfService } : {}),
+      ...(data.defaultWaiterStaffId !== undefined ? { defaultWaiterStaffId: data.defaultWaiterStaffId } : {}),
     },
+    omit: hideQrKey,
   });
 }
 
@@ -70,7 +81,10 @@ export function updateDiningArea(id: string, data: UpdateDiningAreaInput) {
       ...(data.area !== undefined ? { area: data.area } : {}),
       ...(data.capacity !== undefined ? { capacity: data.capacity } : {}),
       ...(data.isActive !== undefined ? { isActive: data.isActive } : {}),
+      ...(data.outOfService !== undefined ? { outOfService: data.outOfService } : {}),
+      ...(data.defaultWaiterStaffId !== undefined ? { defaultWaiterStaffId: data.defaultWaiterStaffId } : {}),
     },
+    omit: hideQrKey,
   });
 }
 

@@ -186,11 +186,17 @@ export function initSocket(httpServer: HttpServer): Server {
 
     console.log(`Socket connected: ${socket.id} (staff ${socket.staff?.id})`);
 
-    // Server-initiated, not client-requested — an ORDER_TAKER socket can't reach this room
-    // (or any other) through the "join" handler below, since canJoinRoom denies it for
-    // every room by its default-deny fallthrough. This is the one room it's ever in.
-    if (socket.staff && socket.staff.role === StaffRole.ORDER_TAKER) {
+    // Server-initiated, not client-requested — these rooms can't be reached through the "join"
+    // handler below (canJoinRoom never allows them), so a socket only ever lands in its own.
+    // user:<id> is every staff member's personal room (Table QR routes a waiter call to the table's
+    // waiter, whatever their role); an ORDER_TAKER socket also joins "order-takers", which hears the
+    // floor map's table/guest/call events. Both inherit the handshake's account check, and
+    // disconnectStaffSockets ends them like any other room.
+    if (socket.staff) {
       socket.join(`user:${socket.staff.id}`);
+      if (socket.staff.role === StaffRole.ORDER_TAKER) {
+        socket.join("order-takers");
+      }
     }
 
     socket.on("join", (room: unknown, ack?: (result: { ok: boolean; error?: string }) => void) => {

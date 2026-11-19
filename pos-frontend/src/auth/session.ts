@@ -69,7 +69,7 @@ export function slotForUrl(pathname: string, search: string): SessionSlot {
   if (pathname.startsWith("/kitchen-display")) {
     return readSlot("kitchen") ? "kitchen" : "admin";
   }
-  if (pathname.startsWith("/take-order") || pathname.startsWith("/my-orders")) {
+  if (pathname.startsWith("/take-order") || pathname.startsWith("/my-orders") || pathname.startsWith("/taker-tables") || pathname.startsWith("/taker-calls")) {
     return "taker";
   }
   if (pathname.startsWith("/login")) {

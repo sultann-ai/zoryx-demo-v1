@@ -31,6 +31,13 @@ posMenuRouter.patch(
   requireRole(StaffRole.POS_ADMIN, StaffRole.SUPER_ADMIN, StaffRole.ONLINE_ADMIN),
   menuController.patchOnlineContent,
 );
+// Table QR: "Show on QR menu" (a menu field like online availability, not a price).
+posMenuRouter.patch(
+  "/:id/qr-availability",
+  requireAuth,
+  requireRole(StaffRole.POS_ADMIN, StaffRole.SUPER_ADMIN, StaffRole.ONLINE_ADMIN),
+  menuController.patchQrAvailability,
+);
 posMenuRouter.delete(
   "/:id",
   requireAuth,

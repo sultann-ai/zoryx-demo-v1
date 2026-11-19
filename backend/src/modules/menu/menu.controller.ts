@@ -48,6 +48,7 @@ export async function createMenuItem(req: Request, res: Response) {
     imageUrl,
     isAvailableInPOS,
     isAvailableOnline,
+    isAvailableOnQr,
     isOpenPrice,
     minPrice,
     maxPrice,
@@ -83,6 +84,10 @@ export async function createMenuItem(req: Request, res: Response) {
   }
   if (isOpenPrice !== undefined && typeof isOpenPrice !== "boolean") {
     res.status(400).json({ error: "isOpenPrice must be a boolean" });
+    return;
+  }
+  if (isAvailableOnQr !== undefined && typeof isAvailableOnQr !== "boolean") {
+    res.status(400).json({ error: "isAvailableOnQr must be a boolean" });
     return;
   }
 
@@ -141,6 +146,10 @@ export async function createMenuItem(req: Request, res: Response) {
   // An open-price item has no fixed price of its own (the cashier types one at order
   // time) — sizes/add-ons are blocked separately, at the variant endpoints (see
   // createVariant) since a brand-new item can't have any yet.
+  if (isOpenPrice === true && isAvailableOnQr === true) {
+    res.status(400).json({ error: "Open-price items can't be on the QR menu" });
+    return;
+  }
   if (isOpenPrice === true && priceDecimal !== undefined && priceDecimal !== null) {
     res.status(400).json({ error: "an open-price item cannot also have a fixed price" });
     return;
@@ -174,6 +183,7 @@ export async function createMenuItem(req: Request, res: Response) {
       ...(imageUrl !== undefined ? { imageUrl } : {}),
       ...(isAvailableInPOS !== undefined ? { isAvailableInPOS } : {}),
       ...(isAvailableOnline !== undefined ? { isAvailableOnline } : {}),
+      ...(isAvailableOnQr !== undefined ? { isAvailableOnQr } : {}),
       ...(isOpenPrice !== undefined ? { isOpenPrice } : {}),
       ...(minPriceDecimal !== undefined ? { minPrice: minPriceDecimal } : {}),
       ...(maxPriceDecimal !== undefined ? { maxPrice: maxPriceDecimal } : {}),
@@ -198,6 +208,7 @@ export async function updateMenuItem(req: Request, res: Response) {
     imageUrl,
     isAvailableInPOS,
     isAvailableOnline,
+    isAvailableOnQr,
     isOpenPrice,
     minPrice,
     maxPrice,
@@ -233,6 +244,10 @@ export async function updateMenuItem(req: Request, res: Response) {
   }
   if (isOpenPrice !== undefined && typeof isOpenPrice !== "boolean") {
     res.status(400).json({ error: "isOpenPrice must be a boolean" });
+    return;
+  }
+  if (isAvailableOnQr !== undefined && typeof isAvailableOnQr !== "boolean") {
+    res.status(400).json({ error: "isAvailableOnQr must be a boolean" });
     return;
   }
 
@@ -292,6 +307,10 @@ export async function updateMenuItem(req: Request, res: Response) {
     res.status(400).json({ error: "an open-price item cannot also have a fixed price" });
     return;
   }
+  if (effectiveIsOpenPrice && isAvailableOnQr === true) {
+    res.status(400).json({ error: "Open-price items can't be on the QR menu" });
+    return;
+  }
   if (effectiveIsOpenPrice && existing.variants.length > 0) {
     res.status(400).json({ error: "remove this item's sizes before marking it as open price" });
     return;
@@ -330,6 +349,8 @@ export async function updateMenuItem(req: Request, res: Response) {
       ...(imageUrl !== undefined ? { imageUrl } : {}),
       ...(isAvailableInPOS !== undefined ? { isAvailableInPOS } : {}),
       ...(isAvailableOnline !== undefined ? { isAvailableOnline } : {}),
+      // Turning an item open-price takes it off the QR menu (a guest never sets a price).
+      ...(isAvailableOnQr !== undefined ? { isAvailableOnQr } : effectiveIsOpenPrice ? { isAvailableOnQr: false } : {}),
       ...(isOpenPrice !== undefined ? { isOpenPrice } : {}),
       ...(minPriceDecimal !== undefined ? { minPrice: minPriceDecimal } : {}),
       ...(maxPriceDecimal !== undefined ? { maxPrice: maxPriceDecimal } : {}),
@@ -366,6 +387,25 @@ export async function patchOnlineAvailability(req: Request, res: Response) {
     }
     throw error;
   }
+}
+
+// PATCH /:id/qr-availability — "Show on QR menu" (Table QR). Never for an open-price item.
+export async function patchQrAvailability(req: Request, res: Response) {
+  const { isAvailableOnQr, ...rest } = (req.body ?? {}) as Record<string, unknown>;
+  if (Object.keys(rest).length > 0 || typeof isAvailableOnQr !== "boolean") {
+    res.status(400).json({ error: "Send { isAvailableOnQr: boolean }" });
+    return;
+  }
+  const existing = await menuService.getMenuItemCoreById(req.params.id as string);
+  if (!existing) {
+    res.status(404).json({ error: "Menu item not found" });
+    return;
+  }
+  if (isAvailableOnQr && existing.isOpenPrice) {
+    res.status(400).json({ error: "Open-price items can't be on the QR menu" });
+    return;
+  }
+  res.json(await menuService.setQrAvailability(existing.id, isAvailableOnQr));
 }
 
 export async function deleteMenuItem(req: Request, res: Response) {

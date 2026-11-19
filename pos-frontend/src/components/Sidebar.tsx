@@ -2,17 +2,19 @@ import { NavLink } from "react-router-dom";
 import { BrandLogo } from "./BrandLogo";
 import { useAuth } from "../context/AuthContext";
 import { useIncomingOrdersContext } from "../context/IncomingOrdersContext";
+import { useTableCallsContext } from "../context/TableCallsContext";
 import type { NavGroup, NavItem, NewTabNavItem } from "../routes/navItems";
 import { GROUP_ORDER, NAV_ITEMS, NEW_TAB_NAV_ITEMS } from "../routes/navItems";
 import { Icon } from "./shell/icons";
+import { NavCountBadge } from "./shell/NavCountBadge";
 import { cn } from "./ui/cn";
 
 export function Sidebar() {
   const { staff } = useAuth();
-  // Only "/incoming-orders" ever has a non-zero count — NavItem has no generic badge
-  // field, so this one destination is special-cased here rather than inventing one for
-  // a single consumer.
+  // Two destinations carry a count — orders waiting at reception and waiter calls nobody has
+  // answered (on Tables) — special-cased here rather than giving NavItem a generic badge field.
   const { count: incomingOrdersCount } = useIncomingOrdersContext();
+  const { badgeCount: openCallsCount } = useTableCallsContext();
 
   const visibleItems = staff ? NAV_ITEMS.filter((item) => item.allowedRoles.includes(staff.role)) : [];
   const visibleNewTabItems = staff ? NEW_TAB_NAV_ITEMS.filter((item) => item.allowedRoles.includes(staff.role)) : [];
@@ -58,6 +60,10 @@ export function Sidebar() {
                   <li key={item.to}>
                     <NavLink
                       to={item.to}
+                      // Exact match only when another entry lives under this path (Tables vs
+                      // Table layout), so "/tables/layout" doesn't light up both. Everything else
+                      // keeps matching its detail pages ("/orders/123" still highlights Orders).
+                      end={visibleItems.some((other) => other.to.startsWith(`${item.to}/`))}
                       className={({ isActive }) =>
                         cn(
                           "flex items-center gap-2.5 rounded-card border-l-2 px-3 py-2 text-body font-medium no-underline transition-colors",
@@ -78,9 +84,10 @@ export function Sidebar() {
                           </span>
                           <span className="flex-1">{item.label}</span>
                           {item.to === "/incoming-orders" && incomingOrdersCount > 0 && (
-                            <span className="rounded-full bg-status-warning px-2 py-0.5 text-meta font-semibold text-white">
-                              {incomingOrdersCount}
-                            </span>
+                            <NavCountBadge count={incomingOrdersCount} tone="warning" label={`${incomingOrdersCount} waiting`} />
+                          )}
+                          {item.to === "/tables" && openCallsCount > 0 && (
+                            <NavCountBadge count={openCallsCount} tone="danger" label={`${openCallsCount} waiting for a waiter`} />
                           )}
                         </>
                       )}

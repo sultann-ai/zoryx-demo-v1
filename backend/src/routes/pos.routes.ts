@@ -22,6 +22,7 @@ import {
   testimonialRouter,
 } from "../modules/siteContent/siteContent.routes";
 import { staffRouter } from "../modules/staff/staff.routes";
+import { tableCallRouter, tableRouter, tableSessionRouter } from "../modules/table/table.routes";
 import { vendorRouter } from "../modules/vendor/vendor.routes";
 
 export const posRouter = Router();
@@ -48,6 +49,10 @@ posRouter.use("/inventory", inventoryRouter);
 posRouter.use("/reports", reportsRouter);
 posRouter.use("/print", printRouter);
 posRouter.use("/vendors", vendorRouter);
+// Table QR: floor map, seating, sessions (docs/TABLE_QR_SPEC.md).
+posRouter.use("/tables", tableRouter);
+posRouter.use("/table-sessions", tableSessionRouter);
+posRouter.use("/table-calls", tableCallRouter);
 
 // Customer-website content (photos, Urdu text, shop info, delivery areas, payment accounts,
 // gallery, testimonials). SUPER_ADMIN, POS_ADMIN, ONLINE_ADMIN.

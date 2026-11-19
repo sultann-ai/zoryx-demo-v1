@@ -5,6 +5,7 @@ import { initSocket } from "./config/socket";
 import { startOrphanPurgeJob } from "./modules/media/orphanPurge.job";
 import { ensureSiteSettings } from "./modules/siteContent/siteContent.service";
 import { startScheduledReleaseJob } from "./modules/order/scheduledRelease.job";
+import { startCallEscalationJob } from "./modules/table/callEscalation.job";
 
 const httpServer = createServer(app);
 
@@ -23,4 +24,7 @@ httpServer.listen(env.PORT, () => {
   // After Socket.io is up, so a release's order:submitted emit reaches reception. Its first
   // pass releases anything that fell due while the server was down.
   startScheduledReleaseJob();
+  // Table QR: waiter calls nobody acknowledged within 2 minutes are escalated to reception. Also
+  // after Socket.io, so the escalation reaches pos-admin; its first pass catches up after a restart.
+  startCallEscalationJob();
 });

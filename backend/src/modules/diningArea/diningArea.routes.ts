@@ -2,6 +2,7 @@ import { Router } from "express";
 import { StaffRole } from "../../../generated/prisma/client";
 import { requireAuth, requireRole } from "../../common/middlewares/auth";
 import * as diningAreaController from "./diningArea.controller";
+import * as tableController from "../table/table.controller";
 
 export const diningAreaRouter = Router();
 
@@ -36,4 +37,11 @@ diningAreaRouter.delete(
   requireAuth,
   requireRole(StaffRole.POS_ADMIN, StaffRole.SUPER_ADMIN),
   diningAreaController.deleteDiningArea,
+);
+// Table QR: a new QR key for this table — the printed card stops working at once (SA/PA).
+diningAreaRouter.post(
+  "/:id/qr-key/regenerate",
+  requireAuth,
+  requireRole(StaffRole.POS_ADMIN, StaffRole.SUPER_ADMIN),
+  tableController.regenerateQrKey,
 );
