@@ -11,11 +11,10 @@ import {
   StaffRole,
 } from "../../../generated/prisma/client";
 import { buildOrdersWorkbook } from "../../common/excel/orderReports";
-import { ifNoneMatchMatches } from "../../common/http/etag";
 import { sendWorkbookAsXlsx } from "../../common/excel/sendWorkbook";
 import * as businessDayService from "../businessDay/businessDay.service";
 import { normalizePublicCode } from "../guestOrder/publicIds";
-import * as mediaService from "../media/media.service";
+import { sendPaymentProof } from "../media/sendPaymentProof";
 import * as orderService from "./order.service";
 import * as orderEvents from "./orderEvents";
 import * as discountPolicy from "./discountPolicy";
@@ -1035,33 +1034,8 @@ export async function markNotCollected(req: Request, res: Response) {
 // GET /:id/payment-proof?size=thumb|full — staff only (the proof is private customer data, so it is
 // never on the public media route). The frontend fetches it with its token and shows a blob URL.
 export async function getPaymentProof(req: Request, res: Response) {
-  const size = req.query.size === undefined ? "full" : req.query.size;
-  if (size !== "thumb" && size !== "full") {
-    res.status(400).json({ error: "size must be thumb or full" });
-    return;
-  }
   const mediaId = await orderService.getOrderPaymentProofId(req.params.id as string);
-  const asset = mediaId ? await mediaService.getAssetMeta(mediaId) : null;
-  if (!mediaId || !asset) {
-    res.status(404).json({ error: "No payment proof for this order" });
-    return;
-  }
-
-  const etag = `"${mediaId}-${size}"`;
-  res.setHeader("ETag", etag);
-  res.setHeader("Cache-Control", "private, max-age=86400");
-  if (ifNoneMatchMatches(req.headers["if-none-match"], etag)) {
-    res.status(304).end();
-    return;
-  }
-  const bytes = await mediaService.getAssetBytes(mediaId, size);
-  if (!bytes) {
-    res.status(404).json({ error: "No payment proof for this order" });
-    return;
-  }
-  res.setHeader("Content-Type", asset.mimeType);
-  res.setHeader("Content-Length", String(bytes.byteLength));
-  res.end(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+  await sendPaymentProof(req, res, mediaId, "No payment proof for this order");
 }
 
 export async function rejectOrder(req: Request, res: Response) {

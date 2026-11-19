@@ -1,18 +1,34 @@
-import { useState } from 'react'
-import type { MenuItem } from '../../api/menu'
+import { useId, useState } from 'react'
+import type { MenuItem, MenuVariant } from '../../api/menu'
 import { useCart } from '../../cart/context'
+import { MAX_LINE_NOTE } from '../../cart/types'
 import { formatRs } from '../../lib/format'
 import { useIsPhone } from '../../lib/useAppMode'
 import { pick } from '../../lib/localized'
 import { useT } from '../../i18n'
 import { Icon } from '../Icon'
 import { Sheet } from '../Sheet'
+import { Field, inputClass } from '../checkout/Field'
 import { buttonClass } from '../ui/buttonClass'
 import { QuantityStepper } from '../ui/QuantityStepper'
 import { Photo } from './Photo'
 
-/** Size, add-ons and quantity for a sized item. Mounted only while open, so state starts fresh every time. */
-export function ItemSheet({ item, closed, onClose }: { item: MenuItem; closed: boolean; onClose: () => void }) {
+/**
+ * Size, add-ons and quantity for a sized item. Mounted only while open, so state starts fresh every time.
+ * `withNotes` (the table QR menu) adds a short note for the kitchen; there the sheet also opens for an item without
+ * sizes, so the guest can write one.
+ */
+export function ItemSheet({
+  item,
+  closed,
+  onClose,
+  withNotes = false,
+}: {
+  item: MenuItem
+  closed: boolean
+  onClose: () => void
+  withNotes?: boolean
+}) {
   const { t, lang } = useT()
   const cart = useCart()
   const phone = useIsPhone() // phones: a draggable bottom sheet that opens at about 85% height
@@ -21,10 +37,14 @@ export function ItemSheet({ item, closed, onClose }: { item: MenuItem; closed: b
   const [variantId, setVariantId] = useState(item.variants[0]?.id ?? '')
   const [addOnIds, setAddOnIds] = useState<string[]>([])
   const [qty, setQty] = useState(1)
+  const [notes, setNotes] = useState('')
+  const noteId = useId()
 
-  const variant = item.variants.find((v) => v.id === variantId) ?? item.variants[0]
-  const chosenAddOns = variant.addOns.filter((a) => addOnIds.includes(a.id))
-  const unit = Number.parseFloat(variant.price ?? '0') + chosenAddOns.reduce((s, a) => s + Number.parseFloat(a.price), 0)
+  // No variant: a plain item (only reached with withNotes), priced by the item itself.
+  const variant: MenuVariant | undefined = item.variants.find((v) => v.id === variantId) ?? item.variants[0]
+  const chosenAddOns = variant ? variant.addOns.filter((a) => addOnIds.includes(a.id)) : []
+  const unit = Number.parseFloat((variant ? variant.price : item.price) ?? '0') + chosenAddOns.reduce((s, a) => s + Number.parseFloat(a.price), 0)
+  const note = notes.trim().replace(/\s+/g, ' ')
 
   const pickVariant = (id: string) => {
     setVariantId(id)
@@ -44,7 +64,16 @@ export function ItemSheet({ item, closed, onClose }: { item: MenuItem; closed: b
           type="button"
           disabled={closed}
           onClick={() => {
-            cart.add({ kind: 'item', id: item.id, variantId: variant.id, addOnIds: chosenAddOns.map((a) => a.id) }, qty)
+            cart.add(
+              {
+                kind: 'item',
+                id: item.id,
+                variantId: variant?.id ?? null,
+                addOnIds: chosenAddOns.map((a) => a.id),
+                ...(withNotes && note ? { notes: note } : {}),
+              },
+              qty,
+            )
             onClose()
           }}
           className={`${buttonClass('primary', 'lg', 'w-full whitespace-nowrap !px-3')} disabled:opacity-40`}
@@ -68,6 +97,7 @@ export function ItemSheet({ item, closed, onClose }: { item: MenuItem; closed: b
         </div>
         {description && <p className="text-muted">{description}</p>}
 
+        {variant && (
         <div role="radiogroup" aria-label={t('menu.chooseSize')} className="space-y-2">
           <h3 className="text-xl">{t('menu.chooseSize')}</h3>
           <div className="grid grid-cols-1 gap-2 min-[420px]:grid-cols-2">
@@ -94,8 +124,9 @@ export function ItemSheet({ item, closed, onClose }: { item: MenuItem; closed: b
             })}
           </div>
         </div>
+        )}
 
-        {variant.addOns.length > 0 && (
+        {variant && variant.addOns.length > 0 && (
           <div className="space-y-2">
             <h3 className="text-xl">{t('menu.addOns')}</h3>
             <ul className="space-y-2">
@@ -124,6 +155,23 @@ export function ItemSheet({ item, closed, onClose }: { item: MenuItem; closed: b
               })}
             </ul>
           </div>
+        )}
+
+        {withNotes && (
+          <Field id={noteId} label={t('table.note.label')} hint={t('table.note.hint')}>
+            <textarea
+              id={noteId}
+              rows={2}
+              autoComplete="off"
+              enterKeyHint="done"
+              className={`${inputClass} border-muted py-3`}
+              maxLength={MAX_LINE_NOTE}
+              value={notes}
+              placeholder={t('table.note.placeholder')}
+              aria-describedby={`${noteId}-hint`}
+              onChange={(event) => setNotes(event.target.value)}
+            />
+          </Field>
         )}
 
         <div className="flex items-center justify-between gap-4">

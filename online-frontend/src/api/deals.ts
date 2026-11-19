@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
-import { apiFetch } from './client'
+import { useContext } from 'react'
+import { MenuSourceContext } from './menuSource'
 import type { ImageUrls } from './store'
 
 // GET /api/online/deals. A deal is a fixed bundle today (no choice slots), so it is added as-is.
@@ -18,9 +19,7 @@ export interface Deal {
   items: { id: string; menuItemId: string; quantity: number; menuItem: { id: string; name: string; nameUr: string | null } }[]
 }
 
+/** The deals of the surrounding MenuSource (online, or the table QR menu's). */
 export function useDeals() {
-  return useQuery({
-    queryKey: ['deals'],
-    queryFn: () => apiFetch<Deal[]>('/api/online/deals'),
-  })
+  return useQuery(useContext(MenuSourceContext).deals)
 }

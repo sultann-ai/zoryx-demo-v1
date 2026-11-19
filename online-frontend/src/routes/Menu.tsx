@@ -1,19 +1,19 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { useDeals } from '../api/deals'
-import { useMenu, type MenuItem } from '../api/menu'
+import type { MenuItem } from '../api/menu'
 import { useStore } from '../api/store'
 import { usePruneCart } from '../cart/pricing'
 import { Announcement } from '../components/home/Announcement'
 import { ErrorState } from '../components/ErrorState'
-import { CategoryChips, type Section } from '../components/menu/CategoryChips'
+import { CategoryChips } from '../components/menu/CategoryChips'
 import { CartBar } from '../components/menu/CartBar'
 import { CartSheet } from '../components/menu/CartSheet'
 import { ClosedBanner, LastOrderBanner } from '../components/menu/Banners'
 import { DealCard } from '../components/menu/DealCard'
 import { ItemCard } from '../components/menu/ItemCard'
 import { ItemSheet } from '../components/menu/ItemSheet'
-import { Fill } from '../components/Fill'
+import { SectionCount } from '../components/menu/SectionCount'
+import { menuGridClass, useActiveSection, useMenuSections, type MenuFilter } from '../components/menu/useMenuSections'
 import { Icon } from '../components/Icon'
 import { SlowHint } from '../components/SlowHint'
 import { Skeleton } from '../components/Skeleton'
@@ -36,26 +36,13 @@ import { useT } from '../i18n'
 // The checkout (form, validation, error mapping) loads only when someone taps Continue.
 const CheckoutSheet = lazy(() => import('../components/checkout/CheckoutSheet').then((m) => ({ default: m.CheckoutSheet })))
 
-// 2 columns on phones (1 below 340px so a card never gets cramped), 3 on tablets, 4 on desktop.
-const gridClass = 'grid grid-cols-2 gap-3 max-[339px]:grid-cols-1 sm:grid-cols-3 sm:gap-5 lg:grid-cols-4'
-
-/** "12 items" / "3 deals" under a section title (numbers go through <Fill> so they stay left-to-right in Urdu). */
-function SectionCount({ n, deals }: { n: number; deals: boolean }) {
-  const { t } = useT()
-  const key = deals ? (n === 1 ? 'menu.dealsCountOne' : 'menu.dealsCount') : n === 1 ? 'cats.countOne' : 'cats.count'
-  return <Fill text={t(key)} values={{ n: String(n) }} />
-}
-
-type MenuFilter = 'popular' | 'new' | 'deals'
-
 export default function Menu() {
   const { t, lang } = useT()
   // /menu?filter=popular|new|deals is what "See all" on the phone Home opens: the same menu, narrowed to that list.
   const [params] = useSearchParams()
   const filterParam = params.get('filter')
   const filter: MenuFilter | null = filterParam === 'popular' || filterParam === 'new' || filterParam === 'deals' ? filterParam : null
-  const menu = useMenu()
-  const deals = useDeals()
+  const { sections, itemsBySection, dealList, menu } = useMenuSections(filter)
   const store = useStore()
   const phone = useShopPhone()
   const isPhone = useIsPhone()
@@ -65,7 +52,6 @@ export default function Menu() {
   const [sheetItem, setSheetItem] = useState<MenuItem | null>(null)
   const [cartOpen, setCartOpen] = useState(false)
   const [checkoutOpen, setCheckoutOpen] = useState(false)
-  const [active, setActive] = useState('')
 
   // Back (browser or Android) closes whichever sheet is open instead of leaving the menu.
   useHistoryLayer(sheetItem !== null || cartOpen || checkoutOpen, () => {
@@ -74,72 +60,13 @@ export default function Menu() {
     setCheckoutOpen(false)
   })
 
-  // One section per category with something orderable, deals first. Items with no (or an unknown) category go last.
-  const { sections, itemsBySection, dealList } = useMemo(() => {
-    const items = (menu.data?.items ?? [])
-      .filter((i) => i.orderable || i.isOpenPrice)
-      .filter((i) => (filter === 'popular' ? i.isFeatured : filter === 'new' ? i.isNew === true : filter === 'deals' ? false : true))
-    const dealList = filter && filter !== 'deals' ? [] : (deals.data ?? []).filter((d) => d.orderable)
-    const known = new Set((menu.data?.categories ?? []).map((c) => c.id))
-    const bySection = new Map<string, MenuItem[]>()
-    const list: Section[] = []
-    if (dealList.length > 0) list.push({ id: 'deals', title: t('menu.deals') })
-    for (const category of menu.data?.categories ?? []) {
-      const inCategory = items.filter((i) => i.categoryId === category.id)
-      if (inCategory.length === 0) continue
-      bySection.set(category.id, inCategory)
-      list.push({ id: category.id, title: pick(lang, category.name, category.nameUr) ?? category.name })
-    }
-    const other = items.filter((i) => !i.categoryId || !known.has(i.categoryId))
-    if (other.length > 0) {
-      bySection.set('other', other)
-      list.push({ id: 'other', title: t('menu.other') })
-    }
-    return { sections: list, itemsBySection: bySection, dealList }
-  }, [menu.data, deals.data, lang, t, filter])
-
   const filterLabel =
     filter === 'popular' ? `${t('popular.title')} ${t('popular.accent')}` : filter === 'new' ? `${t('new.title')} ${t('new.accent')}` : filter === 'deals' ? t('menu.deals') : ''
 
-  // The active chip is the last section whose top has scrolled past the sticky header + chips (the bar's real bottom edge,
-  // so it also holds for the taller phone app bar with its safe-area inset).
-  const sectionIds = sections.map((s) => s.id).join('|')
-  useEffect(() => {
-    if (sectionIds === '') return
-    const ids = sectionIds.split('|')
-    let frame = 0
-    const update = () => {
-      frame = 0
-      let current = ids[0]
-      const chips = document.getElementById('menu-chips')
-      const limit = chips ? chips.getBoundingClientRect().bottom + 12 : 150
-      for (const id of ids) {
-        const node = document.getElementById(`sec-${id}`)
-        if (node && node.getBoundingClientRect().top <= limit) current = id
-      }
-      setActive(current)
-    }
-    const onScroll = () => {
-      if (!frame) frame = requestAnimationFrame(update)
-    }
-    update()
-    window.addEventListener('scroll', onScroll, { passive: true })
-    return () => {
-      window.removeEventListener('scroll', onScroll)
-      cancelAnimationFrame(frame)
-    }
-  }, [sectionIds])
+  const { activeId, jump } = useActiveSection(sections)
 
   // A link from the home page (/menu#sec-<category>) lands on that category once the menu has rendered.
   useScrollToHash(sections.length > 0)
-
-  const activeId = active && sections.some((s) => s.id === active) ? active : (sections[0]?.id ?? '')
-
-  const jump = (id: string) => {
-    setActive(id)
-    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    document.getElementById(`sec-${id}`)?.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' })
-  }
 
   // The menu is what matters: deals that fail to load just leave the Deals section out.
   const loading = menu.isPending
@@ -184,7 +111,7 @@ export default function Menu() {
             ))}
           </div>
           <SlowHint />
-          <ul className={gridClass}>
+          <ul className={menuGridClass}>
             {[0, 1, 2, 3, 4, 5, 6, 7].map((n) => (
               <ProductCardSkeleton key={n} />
             ))}
@@ -224,7 +151,7 @@ export default function Menu() {
                   subtitle={<SectionCount n={section.id === 'deals' ? dealList.length : (itemsBySection.get(section.id)?.length ?? 0)} deals={section.id === 'deals'} />}
                   className="!mb-4"
                 />
-                <ul className={gridClass}>
+                <ul className={menuGridClass}>
                   {section.id === 'deals'
                     ? dealList.map((deal, i) => <DealCard key={deal.id} deal={deal} closed={closed} priority={sectionIndex === 0 && i < 2} />)
                     : itemsBySection.get(section.id)?.map((item, i) => (

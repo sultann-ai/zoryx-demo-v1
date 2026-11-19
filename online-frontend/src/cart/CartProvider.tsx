@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, type ReactNode } from 'react'
 import { uuid } from '../lib/uuid'
 import { CartContext } from './context'
-import { loadCart, saveCart } from './storage'
+import { loadCart, saveCart, WEBSITE_CART, type CartStorage } from './storage'
 import { lineKey, MAX_QTY, type CartLine } from './types'
 import { vibrate } from '../lib/haptics'
 
@@ -63,14 +63,18 @@ function apply(state: State, action: Exclude<Action, { type: 'rid' }>): State {
   }
 }
 
-export function CartProvider({ children }: { children: ReactNode }) {
-  const [state, dispatch] = useReducer(reducer, undefined, (): State => ({ ...loadCart(), removed: null }))
+/**
+ * The website's cart (default), or a table's: the table QR pages nest a second provider with their own storage, so a
+ * guest's table order never mixes with a delivery cart on the same phone. Mount it keyed by `storage.key`.
+ */
+export function CartProvider({ storage = WEBSITE_CART, children }: { storage?: CartStorage; children: ReactNode }) {
+  const [state, dispatch] = useReducer(reducer, undefined, (): State => ({ ...loadCart(storage), removed: null }))
   const ridRef = useRef<string | null>(state.rid)
 
   useEffect(() => {
     ridRef.current = state.rid
-    saveCart(state.lines, state.rid)
-  }, [state.lines, state.rid])
+    saveCart(storage, state.lines, state.rid)
+  }, [storage, state.lines, state.rid])
 
   const add = useCallback((line: Omit<CartLine, 'qty'>, qty = 1) => {
     dispatch({ type: 'add', line, qty })

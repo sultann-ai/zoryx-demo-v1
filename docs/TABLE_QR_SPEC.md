@@ -1,6 +1,6 @@
 # Table QR — build spec
 
-Status: **backend build steps 1–3 built, POS steps 4–5 built** (2026-11-19; step 5 partly, see below); steps 6–12 not started. Written 2026-11-19 from the code as it stands on `demo` (`e5316f2`). Every later Table QR session builds from this file. If the code and this spec disagree, read §11 (Conflicts) first, then fix whichever one is wrong in the same task and say so.
+Status: **backend build steps 1–3 built, POS steps 4–5 built, customer step 6 built, QR print sheet step 7 built, bill backend step 8 built, customer bill UI step 9 built** (2026-11-19; step 5 partly, see below); steps 10–12 not started. Written 2026-11-19 from the code as it stands on `demo` (`e5316f2`). Every later Table QR session builds from this file. If the code and this spec disagree, read §11 (Conflicts) first, then fix whichever one is wrong in the same task and say so.
 
 **Deviations in what's built** (steps 1–3):
 - The session `version` bump after an order change (§5.2) runs right after the order's own commit, not inside it (`table/tableNotify.ts`'s `tableOrderChanged`). A poll landing in those milliseconds may get one last 304; the next poll sees the change.
@@ -24,6 +24,35 @@ Status: **backend build steps 1–3 built, POS steps 4–5 built** (2026-11-19; 
 - **"Round n"** is computed on the client: the order's position among `GET /table-sessions/:id`'s orders (oldest first). No backend change.
 - **Still to build** (from §10 step 5 and the items moved here from step 4): void, remove guest, waiter picker, out-of-service switch in the panel; Order Detail / Orders list labels and the session link; the End Day dialog's open tables; guest names on slips/receipts; the Dining-areas fields; the Store-settings "Table QR" card; the "Show on QR menu" switches.
 - Reject reasons for a QR round are the order-taker ones; §8.2's extra "Item not available / Kitchen closed" reasons weren't added.
+
+**Deviations in step 9** (customer bill UI, see AS_BUILT_FRONTEND §8; decided with the owner):
+- **Guests may set a CUSTOM split** (§7.4 / Q7 said staff only). The server still requires Σ = total exactly and whole rupees except share 1, and a guest's custom shares carry no guest id (they start unclaimed). The 403 `STAFF_ONLY` is gone.
+- **The receipt is made when the bill becomes PAID**, in the transaction that verifies the last share, not at close; the poll's `receiptKey` is filled from then on and the close reuses it. The snapshot's `closedAt` became `issuedAt`.
+- **By items "left to assign"** counts the shared (staff-added) items nobody has ticked; each guest's own rounds count as theirs. The server still splits an unticked shared item across everyone if it comes to that; the page keeps Confirm and Pay disabled until it's zero.
+- **Save image** of the receipt is drawn on a canvas in the browser (§7.6 said no image export); no dependency was added.
+
+**Deviations in step 8** (bill backend, see AS_BUILT_BACKEND §3.20):
+- **Idempotent writes:** a repeated bill write whose result already holds answers 200 unchanged even with a stale `expectedVersion` (not 409 `BILL_CHANGED`); a repeated close of a `CLOSED` session answers the same `{ session, receiptKey }` instead of 409 `SESSION_NOT_OPEN`.
+- **Receipt link after close:** the token is dead the moment the session closes, so the link reaches the phone in the 401 `SESSION_ENDED` body (`receiptKey`) and through `GET /receipt` (which checks the token itself), instead of in a last poll payload.
+- **Cash pay:** the `BILL_CASH` call is raised once per share (request id `bill-cash:<shareId>`) and skips the guest's 60 s call cooldown and the 3-open-calls cap.
+- **Proof re-upload** is also allowed while a share is `PROOF_SUBMITTED` (it replaces the earlier proof), not only from `UNPAID`/`REJECTED`.
+- **A PAID bill** reads as PAYING on the floor map (all shares paid) until the table is closed; §3.7 didn't place it.
+- **Claims** persist across re-splits (read regardless of `splitVersion`); the column records the split they were made in.
+- **Shares of 0** are kept (EQUAL of a tiny total, CUSTOM entries of 0); BY_ITEMS gives no share to a guest owing nothing, as specified.
+- `expectedVersion` is required on unlock, discount, split, claims and claim-share; optional (ignored) on mark-paid/verify/reject/unmark, which are conditional on the share's status instead.
+- Error codes added: `BILL_PAID`, `NOT_AWAITING_VERIFICATION`, `NOT_VERIFIED`, `DISCOUNT_ABOVE_CAP` (403), `DISCOUNT_EXCEEDS_TOTAL`, `NOBODY_TO_SHARE`.
+
+**Deviations in step 7** (QR print sheet, see AS_BUILT_FRONTEND §7.7):
+- Two paper layouts, not just the A4 grid: A4 (6 cards per page) and a 10 × 15 cm table tent (one card per page). The card carries the logo instead of a plain shop name, and the line reads "Scan to order and call your waiter" / "آرڈر دینے اور ویٹر بلانے کے لیے اسکین کریں".
+- The area filter works on the client (one fetch); the `?area=` parameter isn't used.
+- No auto-print on load (unlike the receipt page): the paper is chosen first.
+
+**Deviations in step 6** (customer QR UI, see AS_BUILT_FRONTEND §8):
+- **Token in `sessionStorage`**, not `localStorage` (§8.1 said localStorage): the owner asked for it, so a shared phone forgets the table when the tab closes. The table cart is in `sessionStorage` too (`zoryx:table-cart:<qrKey>`).
+- **Table home at `/t/:qrKey`** once joined (table name, guests, Call waiter, every round's timeline); §8.1's `/t/:qrKey/table` is the "Table" tab: everything ordered, grouped by guest. Joining still lands on the menu; re-scanning the QR with a valid token opens the table home, not the menu.
+- Calls live on the table home (a fixed "Call waiter" button + an options sheet), not on the `/table` screen.
+- Backend: CORS now exposes `ETag` (`app.ts`); without it the cross-origin poll could never send `If-None-Match` (§6.3).
+- Item lines carry a kitchen note (≤ 100) from the item sheet; deals are added without one.
 
 Read with: `CLAUDE.md`, `docs/BACKEND_API.md`, `docs/AS_BUILT_BACKEND.md` (§3.19 guest checkout, §4.1/§4.1a orders and reception, §5 sockets, §6 security), `docs/AS_BUILT_FRONTEND.md`, `docs/DESIGN_SYSTEM.md`, and `docs/design-reference/Foodly-Design-Language.md` (customer side).
 

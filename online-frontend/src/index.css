@@ -876,6 +876,48 @@ html[lang="ur"] .btn {
   }
 }
 
+/* Table QR pages (src/routes/table): the phone app layout at every width — they are used on a phone at a table. The
+   fixed app bar is always 56px; the tab bar exists once the guest has joined (data-tabs). */
+.table-shell {
+  --header-h: calc(56px + env(safe-area-inset-top, 0px));
+  --tabbar-h: 0px;
+}
+.table-shell[data-tabs] {
+  --tabbar-h: calc(56px + var(--sab));
+}
+
+/* Printing a table receipt ("Save as PDF" on the bill or /r/:key): only the receipt, on plain paper. Bars, buttons,
+   toasts and banners are not printed; the receipt card loses its shadow and fills the page width. */
+@media print {
+  @page {
+    margin: 12mm;
+  }
+  html,
+  body,
+  .app-shell {
+    background: var(--color-surface) !important;
+  }
+  #appbar,
+  .tabbar,
+  .minicart,
+  .toast,
+  .no-print {
+    display: none !important;
+  }
+  .app-shell main {
+    padding: 0 !important;
+  }
+  .receipt-paper {
+    max-width: none;
+    box-shadow: none;
+    border: 0;
+    padding: 0;
+  }
+  .receipt-paper * {
+    break-inside: avoid;
+  }
+}
+
 /* The current order step: a soft pulsing sunflower ring (lime is never used on white) (reduced motion: the global rule ends it after one pass). */
 @keyframes step-pulse {
   0%,

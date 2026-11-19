@@ -19,6 +19,8 @@ import { money, recordOrderEvent } from "./orderEvents";
 import { DiscountActor, checkDiscountChange, discountAttribution, loadDiscountCap } from "./discountPolicy";
 import { isPaid } from "../reports/salesDefinitions";
 import { tableOrderChanged } from "../table/tableNotify";
+import { assertNotPaidThroughTableBill, billableOrderWhere, syncTableBillForOrder } from "../table/tableBillGuard";
+import { TableStaffError } from "../table/tableErrors";
 
 export class NoActiveBusinessDayError extends Error {}
 
@@ -1307,6 +1309,8 @@ async function cancelInTransaction(
     before: cancelSnapshot(existing),
     after: { status: OrderStatus.CANCELLED, restocked },
   });
+  // A table's bill loses this order: its split is cancelled (or the cancel refused if shares are paid).
+  await syncTableBillForOrder(tx, existing.id, input.actorId);
   return tx.order.findUniqueOrThrow({ where: { id: existing.id }, include: orderInclude });
 }
 
@@ -1425,6 +1429,7 @@ export async function cancelTableGuestRound(orderId: string, tableGuestId: strin
       before: cancelSnapshot(existing),
       after: { status: OrderStatus.CANCELLED, restocked: false, by: "table_guest" },
     });
+    await syncTableBillForOrder(tx, orderId, null);
     return tx.order.findUniqueOrThrow({ where: { id: orderId }, include: orderInclude });
   });
   emitSafely(() => getIO().to("pos-admin").emit("order:updated", { orderId: order.id, orderNumber: order.orderNumber }));
@@ -1626,6 +1631,7 @@ export async function reviewOrderChange(changeId: string, reviewerId: string, ap
         performedById: reviewerId,
         items: allItems.map((item) => ({ menuItemId: item.menuItemId, quantity: item.quantity })),
       });
+      await syncTableBillForOrder(tx, order.id, reviewerId);
       return tx.orderChange.update({
         where: { id: changeId },
         data: { status: OrderChangeStatus.APPROVED, reviewedById: reviewerId, reviewedAt: new Date() },
@@ -1953,6 +1959,7 @@ async function replaceOrderContents(
       await tx.orderItem.createMany({ data: explodedItemsData });
     }
 
+    await syncTableBillForOrder(tx, orderId, null);
     return tx.order.findUniqueOrThrow({ where: { id: orderId }, include: orderInclude });
   });
 }
@@ -2130,6 +2137,9 @@ export async function acceptOrder(
       });
     }
 
+    // A round that waited at reception while the table's bill was split: accepting it (or its discount)
+    // can move the total, which cancels the split (spec §7.3).
+    await syncTableBillForOrder(tx, orderId, acceptedById);
     return updated;
   });
 
@@ -2202,6 +2212,7 @@ export async function rejectOrder(orderId: string, input: RejectOrderInput, acto
       before: { status: existing.status, paymentStatus: existing.paymentStatus },
       after: { status: rejected.status, paymentStatus: rejected.paymentStatus },
     });
+    await syncTableBillForOrder(tx, orderId, actorId);
     return rejected;
   });
 
@@ -2237,6 +2248,7 @@ export async function markOrderDelivered(orderId: string, actorId: string | null
   if (!DELIVERABLE_STATUSES.includes(existing.status)) {
     throw new OrderNotDeliverableError(existing.status);
   }
+  await assertNotPaidThroughTableBill(prisma, orderId);
 
   // Conditional on the status we just read, so a concurrent cancel can't be overwritten.
   const completed = await prisma.$transaction((tx) =>
@@ -2294,7 +2306,7 @@ type CompletionOrder = Prisma.OrderGetPayload<{ select: typeof completionSelect 
 async function completeInTransaction(
   tx: Prisma.TransactionClient,
   existing: CompletionOrder,
-  options: { actorId: string | null; allowedStatuses: readonly OrderStatus[]; via: "complete" | "delivered" | "auto" },
+  options: { actorId: string | null; allowedStatuses: readonly OrderStatus[]; via: "complete" | "delivered" | "auto" | "table_bill" },
 ): Promise<boolean> {
   const result = await tx.order.updateMany({
     where: { id: existing.id, status: { in: [...options.allowedStatuses] } },
@@ -2330,6 +2342,68 @@ async function afterCompleted(existing: CompletionOrder): Promise<OrderWithItems
   return order;
 }
 
+// ---------- Table QR close with a paid bill (docs/TABLE_QR_SPEC.md §7.5) ----------
+
+// An accepted order still open at the table; the close completes it.
+const TABLE_OPEN_ORDER_STATUSES = [OrderStatus.PENDING, OrderStatus.CONFIRMED, OrderStatus.IN_KITCHEN, OrderStatus.READY] as const;
+
+/**
+ * Inside the table close's transaction, once its bill is PAID: every billable order becomes paid through
+ * the bill (VERIFIED, paidAmount = its total, `paymentMethod` the bill's, a PAYMENT_MARKED event with
+ * via "table_bill"), then every order still open is completed (items SERVED, a COMPLETED event). Returns
+ * the completed orders for announceTableOrdersCompleted() after the commit. Reports read Order only, so a
+ * table's sales land exactly as if each order had been paid on its own (Conflict C4).
+ */
+export async function settleTableOrdersInTransaction(
+  tx: Prisma.TransactionClient,
+  sessionId: string,
+  input: { actorId: string; paymentMethod: PaymentMethod },
+): Promise<CompletionOrder[]> {
+  const billable = await tx.order.findMany({
+    where: billableOrderWhere(sessionId),
+    select: { id: true, paymentStatus: true, paymentMethod: true, totalAmount: true },
+  });
+  for (const order of billable) {
+    const marked = await tx.order.updateMany({
+      where: { id: order.id, paymentStatus: order.paymentStatus },
+      data: {
+        paymentStatus: PaymentStatus.VERIFIED,
+        paymentMethod: input.paymentMethod,
+        paidAmount: order.totalAmount,
+        paymentVerifiedById: input.actorId,
+      },
+    });
+    if (marked.count === 0) {
+      throw new TableStaffError(409, "BILL_CHANGED", "An order of this table changed meanwhile. Reload and try again.");
+    }
+    await recordOrderEvent(tx, {
+      orderId: order.id,
+      actorId: input.actorId,
+      type: OrderEventType.PAYMENT_MARKED,
+      before: { paymentStatus: order.paymentStatus, paymentMethod: order.paymentMethod },
+      after: { paymentStatus: PaymentStatus.VERIFIED, paymentMethod: input.paymentMethod, totalAmount: money(order.totalAmount), via: "table_bill" },
+    });
+  }
+  const open = await tx.order.findMany({
+    where: { tableSessionId: sessionId, status: { in: [...TABLE_OPEN_ORDER_STATUSES] } },
+    select: completionSelect,
+  });
+  for (const order of open) {
+    const completed = await completeInTransaction(tx, order, { actorId: input.actorId, allowedStatuses: TABLE_OPEN_ORDER_STATUSES, via: "table_bill" });
+    if (!completed) {
+      throw new TableStaffError(409, "BILL_CHANGED", "An order of this table changed meanwhile. Reload and try again.");
+    }
+  }
+  return open;
+}
+
+/** After the close committed: the same notifications as any completion (lists, kitchens, waiter). */
+export async function announceTableOrdersCompleted(orders: CompletionOrder[]): Promise<void> {
+  for (const order of orders) {
+    await afterCompleted(order);
+  }
+}
+
 // POST /:id/complete (SA, PA): finish a paid, accepted order of any source and type.
 export async function completeOrder(orderId: string, actorId: string): Promise<OrderWithItems> {
   const existing = await prisma.order.findUnique({ where: { id: orderId }, select: completionSelect });
@@ -2339,6 +2413,7 @@ export async function completeOrder(orderId: string, actorId: string): Promise<O
   if (!COMPLETABLE_STATUSES.includes(existing.status)) {
     throw new OrderNotCompletableError(existing.status);
   }
+  await assertNotPaidThroughTableBill(prisma, orderId);
   if (!isPaid(existing)) {
     throw new OrderUnpaidError();
   }
@@ -2507,6 +2582,7 @@ export async function updatePaymentStatus(
   if (!existing) {
     throw new OrderNotFoundError();
   }
+  await assertNotPaidThroughTableBill(prisma, id);
   if (existing.paymentMethod !== PaymentMethod.CASH) {
     throw new NotCashPaymentError();
   }
@@ -2702,6 +2778,8 @@ export async function addOrderItems(orderId: string, input: AddOrderItemsInput):
       items: input.items.map((item) => ({ menuItemId: item.menuItemId, quantity: item.quantity })),
     });
 
+    // Adding items after a table's split cancels the split (spec §7.3).
+    await syncTableBillForOrder(tx, orderId, input.performedById);
     const refetched = await tx.order.findUniqueOrThrow({ where: { id: orderId }, include: orderInclude });
     return { updatedOrder: refetched, createdItems: created };
   });
@@ -2778,6 +2856,7 @@ export async function removeOrderItem(orderId: string, itemId: string, performed
       items: [{ menuItemId: item.menuItemId, quantity: item.quantity }],
     });
 
+    await syncTableBillForOrder(tx, orderId, performedById);
     return tx.order.findUniqueOrThrow({ where: { id: orderId }, include: orderInclude });
   });
 

@@ -349,7 +349,11 @@ function RegenerateQrBlock({ table }: { table: FloorTable }) {
     <div className="flex flex-col gap-2 border-t border-border pt-4">
       {done && (
         <p role="status" className="text-body text-status-success-text">
-          New QR code made. The old printed card no longer works — print a new one for {table.name}.
+          New QR code made. The old printed card no longer works —{" "}
+          <Link to="/tables/qr-sheet" className="font-medium underline">
+            print a new one for {table.name}
+          </Link>
+          .
         </p>
       )}
       <button type="button" onClick={() => setIsConfirming(true)} className={buttonClassName("danger", "md", "w-full")}>
@@ -363,7 +367,7 @@ function RegenerateQrBlock({ table }: { table: FloorTable }) {
         }}
         onConfirm={handleRegenerate}
         title={`New QR code for ${table.name}?`}
-        message="The QR card printed for this table stops working at once. Guests already at the table stay signed in."
+        message="The QR card already printed for this table stops working the moment you confirm: anyone scanning it will see “We could not find this table”. Print the new card right away. Guests already at the table stay signed in."
         confirmLabel="Make new QR"
         confirmingLabel="Making…"
         isConfirming={regenerate.isPending}

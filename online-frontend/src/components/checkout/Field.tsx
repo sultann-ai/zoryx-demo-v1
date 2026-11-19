@@ -15,7 +15,8 @@ export function Field({
   id: string
   label: string
   hint?: string
-  error?: string | null
+  /** Text, or a sentence with numbers in it (<Fill>). */
+  error?: ReactNode
   children: ReactNode
 }) {
   return (

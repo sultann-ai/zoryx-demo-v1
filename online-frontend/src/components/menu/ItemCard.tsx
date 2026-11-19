@@ -18,11 +18,17 @@ export function ItemCard({
   closed,
   onOpen,
   priority = false,
+  alwaysOpen = false,
+  readOnly = false,
 }: {
   item: MenuItem
   closed: boolean
   onOpen: (item: MenuItem) => void
   priority?: boolean
+  /** The table QR menu: "+" always opens the item sheet (sizes, add-ons and a kitchen note), even without sizes. */
+  alwaysOpen?: boolean
+  /** Look only (a table that isn't seated yet): no "+" at all. */
+  readOnly?: boolean
 }) {
   const { t, lang } = useT()
   const cart = useCart()
@@ -31,7 +37,7 @@ export function ItemCard({
   const name = pick(lang, item.name, item.nameUr) ?? item.name
   const description = pick(lang, item.description, item.descriptionUr)
   const price = displayPrice(item)
-  const sized = item.variants.length > 0
+  const sized = item.variants.length > 0 || alwaysOpen
 
   const fixedKey = lineKey({ kind: 'item', id: item.id, variantId: null, addOnIds: [] })
   const fixedQty = cart.lines.find((l) => lineKey(l) === fixedKey)?.qty ?? 0
@@ -78,6 +84,7 @@ export function ItemCard({
       action={action}
       extra={item.isOpenPrice ? <p className="text-sm text-muted">{whatsapp ? t('menu.askPrice') : t('contact.call')}</p> : null}
       priority={priority}
+      readOnly={readOnly}
     />
   )
 }

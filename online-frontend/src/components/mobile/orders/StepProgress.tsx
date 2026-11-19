@@ -27,15 +27,25 @@ function stepsFor(type: OrderType): Step[] {
   ]
 }
 
-/**
- * Vertical progress: a line that fills down to the current step (it animates in when the screen opens and each time the
- * status moves on), done steps with a check, the current step with a soft pulsing ring, the rest muted.
- */
+/** An order's progress as a list of steps: delivery/pickup tracking here, a table round in the table QR pages. */
 export function StepProgress({ status, orderType }: { status: CustomerStatus; orderType: OrderType }) {
   const { t } = useT()
   const steps = stepsFor(orderType)
-  const current = Math.max(0, steps.findIndex((s) => s.status === status))
-  const finished = status === 'DELIVERED'
+  return (
+    <Steps
+      steps={steps.map((s) => ({ key: s.status, icon: s.icon, label: t(s.label) }))}
+      current={Math.max(0, steps.findIndex((s) => s.status === status))}
+      finished={status === 'DELIVERED'}
+    />
+  )
+}
+
+/**
+ * Vertical progress: a line that fills down to the current step (it animates in when the screen opens and each time the
+ * status moves on), done steps with a check, the current step with a soft pulsing ring, the rest muted. `finished`
+ * marks every step done (the last step reached is a finish, not a step in progress).
+ */
+export function Steps({ steps, current, finished }: { steps: { key: string; icon: IconName; label: string }[]; current: number; finished: boolean }) {
   // Start empty and grow to the real value after the first paint, so the line visibly fills.
   const target = steps.length > 1 ? (current / (steps.length - 1)) * 100 : 0
   const [fill, setFill] = useState(0)
@@ -57,7 +67,7 @@ export function StepProgress({ status, orderType }: { status: CustomerStatus; or
         const done = i < current || finished
         const now = i === current && !finished
         return (
-          <li key={step.status} aria-current={now ? 'step' : undefined} className="relative flex min-h-12 items-center gap-4">
+          <li key={step.key} aria-current={now ? 'step' : undefined} className="relative flex min-h-12 items-center gap-4">
             <span
               className={`z-10 flex size-12 shrink-0 items-center justify-center rounded-full transition-colors duration-[var(--dur-page)] ${
                 done ? 'bg-success text-on-action' : now ? 'step-now border-2 border-ink bg-surface text-ink' : 'bg-band text-muted'
@@ -65,7 +75,7 @@ export function StepProgress({ status, orderType }: { status: CustomerStatus; or
             >
               <Icon name={done ? 'check' : step.icon} className="size-6" />
             </span>
-            <span className={`text-xl ${now ? 'font-bold text-ink' : done ? 'font-bold text-ink' : 'text-muted'}`}>{t(step.label)}</span>
+            <span className={`text-xl ${now ? 'font-bold text-ink' : done ? 'font-bold text-ink' : 'text-muted'}`}>{step.label}</span>
           </li>
         )
       })}

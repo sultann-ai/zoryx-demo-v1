@@ -11,6 +11,7 @@ import { NewOrderPage } from "./pages/NewOrderPage";
 import { OrderDetailPage } from "./pages/OrderDetailPage";
 import { PrintKitchenTicketsPage } from "./pages/PrintKitchenTicketsPage";
 import { PrintReceiptPage } from "./pages/PrintReceiptPage";
+import { QrSheetPage } from "./pages/QrSheetPage";
 import { TablesPage } from "./pages/TablesPage";
 import { TakerCallsPage } from "./pages/TakerCallsPage";
 import { TakeOrderPage } from "./pages/TakeOrderPage";
@@ -72,6 +73,15 @@ function AppRoutes() {
         element={
           <ProtectedRoute allowedRoles={ORDERS_STAFF_ROLES}>
             <PrintReceiptPage />
+          </ProtectedRoute>
+        }
+      />
+      {/* Table QR cards (A4 sheet or 10 x 15 cm tents): standalone for the same reason. */}
+      <Route
+        path="/tables/qr-sheet"
+        element={
+          <ProtectedRoute allowedRoles={["SUPER_ADMIN", "POS_ADMIN"]}>
+            <QrSheetPage />
           </ProtectedRoute>
         }
       />

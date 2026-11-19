@@ -113,6 +113,11 @@ export function TablesPage() {
               Arrange tables
             </Link>
           )}
+          {isAdmin && hasTables && (
+            <Link to="/tables/qr-sheet" className={buttonClassName("secondary")}>
+              Print QR cards
+            </Link>
+          )}
         </>
       }
     />

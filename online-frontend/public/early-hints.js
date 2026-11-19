@@ -29,4 +29,6 @@
     add({ as: 'fetch', href: api + '/api/online/menu', crossorigin: 'anonymous' })
     add({ as: 'fetch', href: api + '/api/online/deals', crossorigin: 'anonymous' })
   }
+  // A table's QR (/t/<22-char key>): every table screen shows the QR menu, seated or not.
+  if (api && /^\/t\/[A-Za-z0-9_-]{22}(\/|$)/.test(path)) add({ as: 'fetch', href: api + '/api/online/table/menu', crossorigin: 'anonymous' })
 })()

@@ -40,6 +40,11 @@ export type IconName =
   | 'image'
   | 'trash'
   | 'search'
+  | 'bell'
+  | 'drop'
+  | 'napkin'
+  | 'note'
+  | 'users'
 
 const iconPaths: Record<IconName, string> = {
   phone:
@@ -88,6 +93,13 @@ const iconPaths: Record<IconName, string> = {
   trash: 'M9 3h6l1 1h4v2H4V4h4zm-3 5h12l-1 13H7z',
   search: 'M10 2a8 8 0 1 0 4.9 14.3l5.4 5.4 1.4-1.4-5.4-5.4A8 8 0 0 0 10 2zm0 2a6 6 0 1 1 0 12 6 6 0 0 1 0-12z',
   more: 'M5 10a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm7 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm7 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4z',
+  // Table QR: call a waiter, water, napkins, a kitchen note, the guests at the table.
+  bell: 'M12 22a2 2 0 0 0 2-2h-4a2 2 0 0 0 2 2zm6-6v-5a6 6 0 0 0-5-5.9V4a1 1 0 0 0-2 0v1.1A6 6 0 0 0 6 11v5l-2 2v1h16v-1z',
+  drop: 'M12 2s-7 7.6-7 12.5a7 7 0 0 0 14 0C19 9.6 12 2 12 2z',
+  napkin: 'M4 4h16v16H4zm2 2v8.6L14.6 6zm12 3.4L9.4 18H18z',
+  note: 'M3 17.2V21h3.8l11-11-3.8-3.8zM20.7 7a1 1 0 0 0 0-1.4l-2.3-2.3a1 1 0 0 0-1.4 0l-1.8 1.8 3.8 3.8z',
+  users:
+    'M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm8 0a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM9 13c-3.3 0-7 1.7-7 4.5V20h14v-2.5C16 14.7 12.3 13 9 13zm8.6.1c1.4 1 2.4 2.5 2.4 4.4V20h3v-2.5c0-2.4-2.7-4-5.4-4.4z',
 }
 
 /**

@@ -30,7 +30,11 @@ function timeoutSignal(): AbortSignal {
   return controller.signal
 }
 
-export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+/**
+ * The response itself, for callers that handle a status apiFetch would treat as an error (the table poll's 304).
+ * Network failures and time-outs still throw ApiError(0); any other non-2xx except `allow` throws the server's error.
+ */
+export async function apiResponse(path: string, init?: RequestInit, allow: number[] = []): Promise<Response> {
   let response: Response
   try {
     response = await fetch(apiUrl(path), {
@@ -41,10 +45,15 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   } catch {
     throw new ApiError(0, 'Network error')
   }
-  if (!response.ok) {
+  if (!response.ok && !allow.includes(response.status)) {
     const body = (await response.json().catch(() => null)) as { error?: string; code?: string } | null
     throw new ApiError(response.status, body?.error ?? response.statusText, body?.code, { ...body })
   }
+  return response
+}
+
+export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await apiResponse(path, init)
   return (await response.json()) as T
 }
 

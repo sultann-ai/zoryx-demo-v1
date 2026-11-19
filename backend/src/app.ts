@@ -19,7 +19,8 @@ app.set("trust proxy", env.TRUST_PROXY_HOPS);
 // to be embedded from other origins opt out individually: /uploads here (the POS frontend shows
 // payment screenshots) and GET /api/online/media (the customer website shows photos).
 app.use(helmet());
-app.use(cors({ origin: (origin, callback) => callback(null, isOriginAllowed(origin)) }));
+// ETag is exposed so the table QR poll (a cross-origin fetch) can read it and send If-None-Match.
+app.use(cors({ origin: (origin, callback) => callback(null, isOriginAllowed(origin)), exposedHeaders: ["ETag"] }));
 // The first JSON parser to run wins, so the tighter /api/online limit must be registered
 // before the general one.
 app.use("/api/online", express.json({ limit: "50kb" }));

@@ -884,13 +884,15 @@ model MediaAsset {
   createdById     String?
   createdBy       StaffUser? @relation(fields: [createdById], references: [id], onDelete: SetNull)
 
-  blob               MediaBlob?
-  menuItems          MenuItem[]       @relation("MenuItemImage")
-  deals              Deal[]           @relation("DealImage")
-  categories         Category[]       @relation("CategoryImage")
-  galleryImages      GalleryImage[]
-  paymentAccounts    PaymentAccount[]
-  paymentProofOrders Order[]          @relation("OrderPaymentProof")
+  blob                 MediaBlob?
+  menuItems            MenuItem[]       @relation("MenuItemImage")
+  deals                Deal[]           @relation("DealImage")
+  categories           Category[]       @relation("CategoryImage")
+  galleryImages        GalleryImage[]
+  paymentAccounts      PaymentAccount[]
+  paymentProofOrders   Order[]          @relation("OrderPaymentProof")
+  // A table guest's payment proof for their share of the bill (Table QR phase 2).
+  tableBillShareProofs TableBillShare[]
 
   @@index([kind, createdAt])
 }
@@ -1042,10 +1044,13 @@ model TableSession {
   createdAt     DateTime           @default(now())
   updatedAt     DateTime           @updatedAt
 
-  guests TableGuest[]
-  orders Order[]
-  events TableSessionEvent[]
-  calls  TableCall[]
+  guests  TableGuest[]
+  orders  Order[]
+  events  TableSessionEvent[]
+  calls   TableCall[]
+  // Phase 2: the table's one bill (reused after an unlock) and its receipt once closed.
+  bill    TableBill?
+  receipt TableReceipt?
 
   @@index([diningAreaId, status])
   @@index([businessDayId, status])
@@ -1071,10 +1076,11 @@ model TableGuest {
   revokedBy     StaffUser?   @relation("TableGuestRevokedBy", fields: [revokedById], references: [id], onDelete: SetNull)
   createdAt     DateTime     @default(now())
 
-  orders     Order[]         @relation("OrderTableGuest")
-  orderItems OrderItem[]     @relation("OrderItemTableGuest")
-  dealLines  OrderDealLine[] @relation("DealLineTableGuest")
+  orders     Order[]          @relation("OrderTableGuest")
+  orderItems OrderItem[]      @relation("OrderItemTableGuest")
+  dealLines  OrderDealLine[]  @relation("DealLineTableGuest")
   calls      TableCall[]
+  billClaims TableBillClaim[]
 
   @@unique([sessionId, joinOrder])
   @@index([sessionId])
@@ -1129,4 +1135,121 @@ model TableCall {
   @@index([sessionId, status])
   @@index([status, createdAt])
   @@index([guestId, createdAt])
+}
+
+// ================= TABLE QR — PHASE 2: THE TABLE BILL (docs/TABLE_QR_SPEC.md §2.4, §7) =================
+
+enum TableBillStatus {
+  REQUESTED
+  UNLOCKED
+  PAID
+}
+
+enum SplitMode {
+  EQUAL
+  BY_ITEMS
+  CUSTOM
+}
+
+enum TableShareStatus {
+  UNPAID
+  PROOF_SUBMITTED
+  VERIFIED
+  REJECTED
+  VOID
+}
+
+enum TableBillLineKind {
+  ITEM
+  DEAL
+}
+
+// One bill per session, reused after an unlock. A view over the session's orders: money stays on Order
+// (the discount is allocated onto the orders, settling marks them paid), so reports need no change.
+model TableBill {
+  id                 String          @id @default(uuid())
+  sessionId          String          @unique
+  session            TableSession    @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  status             TableBillStatus @default(REQUESTED)
+  requestedByGuestId String?
+  requestedByStaffId String?
+  requestedAt        DateTime        @default(now())
+  // Snapshot at the last recompute; the orders stay the source of truth.
+  subtotal           Decimal         @db.Decimal(10, 2)
+  discount           Decimal         @default(0) @db.Decimal(10, 2)
+  total              Decimal         @db.Decimal(10, 2)
+  discountById       String?
+  discountAt         DateTime?
+  discountReason     String?         @db.VarChar(200)
+  splitMode          SplitMode?
+  // Bumped whenever the shares are rebuilt or voided.
+  splitVersion       Int             @default(0)
+  // Optimistic concurrency: every bill write sends the version it saw (expectedVersion).
+  version            Int             @default(0)
+  paidAt             DateTime?
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+
+  shares TableBillShare[]
+  claims TableBillClaim[]
+}
+
+model TableBillShare {
+  id                  String           @id @default(uuid())
+  billId              String
+  bill                TableBill        @relation(fields: [billId], references: [id], onDelete: Cascade)
+  splitVersion        Int
+  // 1-based; share 1 takes the rupee remainder.
+  position            Int
+  // Owner (BY_ITEMS) or claimer (EQUAL/CUSTOM); null until claimed.
+  guestId             String?
+  label               String           @db.VarChar(40)
+  // Whole rupees, except share 1 may carry paisa.
+  amount              Decimal          @db.Decimal(10, 2)
+  status              TableShareStatus @default(UNPAID)
+  method              PaymentMethod?
+  paymentProofMediaId String?
+  paymentProofMedia   MediaAsset?      @relation(fields: [paymentProofMediaId], references: [id], onDelete: SetNull)
+  // Cash handed over; change = paidAmount - amount, computed, never stored.
+  paidAmount          Decimal?         @db.Decimal(10, 2)
+  verifiedById        String?
+  verifiedAt          DateTime?
+  rejectedReason      String?          @db.VarChar(200)
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+
+  @@unique([billId, splitVersion, position])
+  @@index([billId, splitVersion])
+  @@index([status])
+}
+
+// BY_ITEMS: "I had some of this shared line". One row per guest per line.
+model TableBillClaim {
+  id           String            @id @default(uuid())
+  billId       String
+  bill         TableBill         @relation(fields: [billId], references: [id], onDelete: Cascade)
+  splitVersion Int
+  lineKind     TableBillLineKind
+  // OrderItem.id (a direct, priced line) or OrderDealLine.id.
+  lineId       String
+  guestId      String
+  guest        TableGuest        @relation(fields: [guestId], references: [id], onDelete: Cascade)
+  createdAt    DateTime          @default(now())
+
+  @@unique([billId, splitVersion, lineKind, lineId, guestId])
+}
+
+model TableReceipt {
+  id               String       @id @default(uuid())
+  sessionId        String       @unique
+  session          TableSession @relation(fields: [sessionId], references: [id], onDelete: Restrict)
+  // 32 random bytes, base64url (43 chars): the long, unguessable receipt link.
+  receiptKey       String       @unique
+  // §7.6; built once at close, never recomputed.
+  snapshot         Json
+  total            Decimal      @db.Decimal(10, 2)
+  // Future PRA/FBR fiscal invoice; nothing writes these yet.
+  taxInvoiceNumber String?
+  taxAuthority     String?
+  createdAt        DateTime     @default(now())
 }

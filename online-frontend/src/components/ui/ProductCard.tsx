@@ -42,6 +42,7 @@ export function ProductCard({
   inOrder = 0,
   action,
   priority = false,
+  readOnly = false,
   as = 'li',
 }: {
   name: string
@@ -64,6 +65,8 @@ export function ProductCard({
   /** Replaces the "+" / stepper entirely (e.g. "Ask the price", or the home page's link to the menu). */
   action?: ReactNode
   priority?: boolean
+  /** A menu to look at only (a table that isn't seated yet): no "+", stepper or action at all. */
+  readOnly?: boolean
   as?: 'li' | 'div'
 }) {
   const { t } = useT()
@@ -105,7 +108,7 @@ export function ProductCard({
             // On a narrow card the stepper needs the whole row, so the price steps aside (the cart bar shows the total).
             <PriceTag amount={price.amount} from={price.from} className={hasStepper ? '@max-[239px]:invisible' : ''} />
           )}
-          {action ? (
+          {readOnly ? null : action ? (
             <div className="ms-auto">{action}</div>
           ) : hasStepper ? (
             <QuantityStepper value={qty} onChange={onQtyChange} min={0} compact noIncrease={disabled} className="pop absolute bottom-0 end-0" />

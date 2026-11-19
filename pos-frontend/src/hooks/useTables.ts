@@ -1,10 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { diningAreasApi } from "../api/diningAreas";
-import type { FloorPlan, FloorTable, LayoutEntry, SeatResult, StaffTableCall } from "../api/tables";
+import type { FloorPlan, FloorTable, LayoutEntry, QrSheetTable, SeatResult, StaffTableCall } from "../api/tables";
 import {
   acknowledgeTableCall,
   closeTableSession,
   fetchOpenTableCalls,
+  fetchQrSheet,
   fetchFloorPlan,
   fetchTableSession,
   regenerateTableQrKey,
@@ -17,6 +18,7 @@ import {
 export const FLOOR_QUERY_KEY = ["tables", "floor"] as const;
 export const TABLE_SESSION_QUERY_KEY = ["table-sessions"] as const;
 export const TABLE_CALLS_QUERY_KEY = ["table-calls", "open"] as const;
+export const QR_SHEET_QUERY_KEY = ["tables", "qr-sheet"] as const;
 
 // An optimistic seat's placeholder session id: never fetched, replaced by the refetch that follows.
 const OPTIMISTIC_PREFIX = "optimistic:";
@@ -122,8 +124,26 @@ export function useCloseTableSession() {
   });
 }
 
+// The print sheet's tables, sorted the way people count ("Table 2" before "Table 10").
+export function useQrSheet() {
+  return useQuery({
+    queryKey: QR_SHEET_QUERY_KEY,
+    queryFn: fetchQrSheet,
+    select: (data) => [...data.tables].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" })),
+  });
+}
+
+// The new key goes straight into the print sheet's data, so its card redraws with the new QR at once.
 export function useRegenerateTableQrKey() {
-  return useMutation({ mutationFn: regenerateTableQrKey });
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: regenerateTableQrKey,
+    onSuccess: ({ id, qrKey }) => {
+      queryClient.setQueryData<{ tables: QrSheetTable[] }>(QR_SHEET_QUERY_KEY, (current) =>
+        current ? { tables: current.tables.map((table) => (table.id === id ? { ...table, qrKey } : table)) } : current,
+      );
+    },
+  });
 }
 
 export interface TableDetailsChange {

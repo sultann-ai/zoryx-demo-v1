@@ -11,14 +11,15 @@ function subscribe(callback: () => void) {
   }
 }
 
-export function OfflineBanner() {
+/** `message` replaces the default "you are offline, you can also call us" (the table QR pages say what is kept). */
+export function OfflineBanner({ message, className = '' }: { message?: string; className?: string }) {
   const { t } = useT()
   const online = useSyncExternalStore(subscribe, () => navigator.onLine, () => true)
   if (online) return null
   return (
-    <div role="status" className="flex items-center justify-center gap-2 bg-error px-4 py-2 text-center text-on-action">
+    <div role="status" className={`flex items-center justify-center gap-2 bg-error px-4 py-2 text-center text-on-action ${className}`}>
       <Icon name="wifi-off" />
-      <span>{t('net.offline')}</span>
+      <span>{message ?? t('net.offline')}</span>
     </div>
   )
 }

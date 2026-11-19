@@ -94,6 +94,13 @@ describe("public Table QR routes", () => {
       ["POST", "/api/online/table/orders/some-id/cancel"],
       ["POST", "/api/online/table/calls"],
       ["POST", "/api/online/table/calls/some-id/cancel"],
+      ["POST", "/api/online/table/bill/request"],
+      ["PUT", "/api/online/table/bill/split"],
+      ["PUT", "/api/online/table/bill/claims"],
+      ["POST", "/api/online/table/bill/shares/sh1/claim"],
+      ["POST", "/api/online/table/bill/shares/sh1/pay"],
+      ["POST", "/api/online/table/bill/shares/sh1/payment-proof"],
+      ["GET", "/api/online/table/receipt"],
     ] as const) {
       const response = await call(method, path, method === "GET" ? {} : { guestToken: "not-a-token" });
       expect(response.status, path).toBe(401);
@@ -107,6 +114,18 @@ describe("public Table QR routes", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("public, max-age=60");
     expect(await response.json()).toEqual({ categories: [], items: [], deals: [] });
+  });
+
+  it("answers a malformed receipt link 404 without a database query, never cached", async () => {
+    db.calls = 0;
+    const response = await call("GET", "/api/online/receipts/too-short");
+    expect(response.status).toBe(404);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(await response.json()).toMatchObject({ code: "NOT_FOUND" });
+    expect(db.calls).toBe(0);
+    // A well-formed but unknown key looks exactly the same.
+    const unknown = await call("GET", `/api/online/receipts/${"A".repeat(43)}`);
+    expect(unknown.status).toBe(404);
   });
 
   it("a staff JWT is not a guest token", async () => {
@@ -159,5 +178,31 @@ describe("staff Table QR routes: roles", () => {
   it("lets ONLINE_ADMIN (like SA/PA) set an item's QR flag, but not an order taker", async () => {
     expect((await call("PATCH", "/api/pos/menu/m1/qr-availability", { role: "ORDER_TAKER", body: { isAvailableOnQr: true } })).status).toBe(403);
     expect(reaches((await call("PATCH", "/api/pos/menu/m1/qr-availability", { role: "ONLINE_ADMIN", body: { isAvailableOnQr: true } })).status)).toBe(true);
+  });
+
+  it("the table bill: asking for it and reading the receipt are floor actions; discount, split and payments are SA/PA only", async () => {
+    for (const role of ["SUPER_ADMIN", "POS_ADMIN", "ORDER_TAKER"]) {
+      expect(reaches((await call("POST", "/api/pos/table-sessions/s1/bill", { role })).status), role).toBe(true);
+      expect(reaches((await call("GET", "/api/pos/table-sessions/s1/receipt", { role })).status), role).toBe(true);
+    }
+    for (const [method, path] of [
+      ["POST", "/api/pos/table-sessions/s1/bill/unlock"],
+      ["PUT", "/api/pos/table-sessions/s1/bill/discount"],
+      ["PUT", "/api/pos/table-sessions/s1/bill/split"],
+      ["POST", "/api/pos/table-sessions/s1/bill/shares/sh1/mark-paid"],
+      ["POST", "/api/pos/table-sessions/s1/bill/shares/sh1/verify"],
+      ["POST", "/api/pos/table-sessions/s1/bill/shares/sh1/reject"],
+      ["POST", "/api/pos/table-sessions/s1/bill/shares/sh1/unmark"],
+      ["GET", "/api/pos/table-sessions/s1/bill/shares/sh1/payment-proof"],
+    ] as const) {
+      expect((await call(method, path, { role: "ORDER_TAKER" })).status, path).toBe(403);
+      expect((await call(method, path, { role: "KITCHEN" })).status, path).toBe(403);
+      expect(reaches((await call(method, path, { role: "POS_ADMIN" })).status), path).toBe(true);
+    }
+    // Validation runs before any work: an amount with fractions of paisa, or an unknown field.
+    const badDiscount = await call("PUT", "/api/pos/table-sessions/s1/bill/discount", { role: "POS_ADMIN", body: { discount: "10.005", expectedVersion: 0 } });
+    expect(badDiscount.status).toBe(400);
+    const extra = await call("PUT", "/api/pos/table-sessions/s1/bill/split", { role: "POS_ADMIN", body: { mode: "EQUAL", total: "1", expectedVersion: 0 } });
+    expect(extra.status).toBe(400);
   });
 });

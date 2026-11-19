@@ -208,3 +208,17 @@ export async function regenerateTableQrKey(diningAreaId: string): Promise<{ id: 
   const { data } = await apiClient.post<{ id: string; qrKey: string }>(`/api/pos/dining-areas/${diningAreaId}/qr-key/regenerate`);
   return data;
 }
+
+// GET /tables/qr-sheet (SA/PA): every active table with its QR key. The server makes a key for any
+// table that has none yet, so a fresh install can print straight away.
+export interface QrSheetTable {
+  id: string;
+  name: string;
+  area: string | null;
+  qrKey: string;
+}
+
+export async function fetchQrSheet(): Promise<{ tables: QrSheetTable[] }> {
+  const { data } = await apiClient.get<{ tables: QrSheetTable[] }>("/api/pos/tables/qr-sheet");
+  return data;
+}

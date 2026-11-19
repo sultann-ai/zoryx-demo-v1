@@ -56,7 +56,9 @@ export const onlineGeneralLimiter = createLimiter({
     req.path.startsWith("/orders") ||
     // Table QR: a whole restaurant's guests share one Wi-Fi IP, so these have their own limiters
     // (below), most of them keyed by the guest's token rather than the IP.
-    req.path.startsWith("/table"),
+    req.path.startsWith("/table") ||
+    // Table receipt links (Table QR phase 2): their own receiptLimiter.
+    req.path.startsWith("/receipts"),
 });
 
 export const mediaLimiter = createLimiter({ limit: MEDIA_REQUESTS_PER_WINDOW });
@@ -84,3 +86,8 @@ function tableTokenKey(req: Request): string {
 // The poll runs every 5 s while a guest watches (180 per 15 min); this leaves room for refetches.
 export const tablePollLimiter = createLimiter({ limit: 600, keyGenerator: tableTokenKey });
 export const tableActionLimiter = createLimiter({ limit: 120, keyGenerator: tableTokenKey });
+// A guest's payment proof for their share of the bill: the same budget as an online order's proof
+// upload, but per guest token (a whole restaurant shares one IP).
+export const tableProofUploadLimiter = createLimiter({ limit: PROOF_UPLOADS_PER_WINDOW, keyGenerator: tableTokenKey });
+// GET /api/online/receipts/:receiptKey — public, per IP.
+export const receiptLimiter = createLimiter({ limit: 300 });

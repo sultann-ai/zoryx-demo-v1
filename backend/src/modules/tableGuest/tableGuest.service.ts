@@ -30,6 +30,8 @@ import {
   TABLE_QR_LIMITS,
 } from "./tableQrLimits";
 import { computeTableOrdering, deriveTableRoundStatus, TableClosedReason } from "./tableStatus";
+import { isBillLocked } from "../table/tableBillGuard";
+import { guestBillView } from "../table/tableBill.service";
 import { DISPLAY_NAME_MAX_LENGTH, JoinInput, TableCallInput, TableOrderInput } from "./tableGuest.validators";
 
 // Every refusal on the public Table QR routes: an HTTP status and the { code, error } body the page
@@ -332,7 +334,7 @@ function addOnNames(raw: unknown): { name: string; price: string }[] {
 }
 
 // Everything the guest's phone shows, built field by field. Never: the PIN, tokens, the QR key, staff
-// names or ids, phone numbers. Calls and the bill arrive with build steps 3 and 8.
+// names or ids, phone numbers.
 export async function getSessionPoll(guest: AuthenticatedGuest) {
   const session = await prisma.tableSession.findUniqueOrThrow({
     where: { id: guest.sessionId },
@@ -437,8 +439,10 @@ export async function getSessionPoll(guest: AuthenticatedGuest) {
       orderSeconds: orderCooldownSeconds(myLastOrderAt, new Date()),
       callSeconds: callCooldownSeconds(myLastCallAt, new Date()),
     },
-    bill: null,
-    receiptKey: null,
+    // Phase 2: the table's bill as this guest sees it (null until someone asks for it), and the receipt
+    // link once the bill is paid (after the close the token is dead, so it also comes with the 401).
+    bill: await guestBillView(prisma, guest.sessionId, guest.id),
+    receiptKey: (await prisma.tableReceipt.findUnique({ where: { sessionId: guest.sessionId }, select: { receiptKey: true } }))?.receiptKey ?? null,
   };
 }
 
@@ -528,6 +532,11 @@ export async function createTableOrder(
     const me = await tx.tableGuest.findUnique({ where: { id: guest.id }, select: { revokedAt: true } });
     if (now?.status !== TableSessionStatus.OPEN || !me || me.revokedAt !== null) {
       throw sessionEnded();
+    }
+    // The bill has been asked for: the table is locked until staff unlock it (spec §3.5). Checked under
+    // the session lock, so a round and a bill request can't both slip through.
+    if (await isBillLocked(tx, guest.sessionId)) {
+      throw new TableGuestError(409, "BILL_LOCKED", "The bill has been asked for, so new orders are paused. Ask a staff member if you'd like to order more.");
     }
     const [guestAwaiting, sessionAwaiting, sessionOrders, last] = await Promise.all([
       tx.order.count({ where: { tableGuestId: guest.id, status: OrderStatus.AWAITING_RECEPTION } }),

@@ -57,8 +57,12 @@ function Step({
   )
 }
 
-/** Pick a screenshot and send it to the shop (POST /payment-proof). On success the order's payment state moves on by itself. */
-function UploadStep({ publicId, onDone }: { publicId: string; onDone: () => void }) {
+/**
+ * Pick a payment screenshot and send it: an online order's (POST /payment-proof) or, at a table, the guest's share of
+ * the bill. `upload` does the sending; on success the payment state moves on by itself. A 409 means the payment no
+ * longer waits for a proof: the screen is refreshed through `onDone`.
+ */
+export function ProofUpload({ upload, onDone }: { upload: (file: File) => Promise<unknown>; onDone: () => void }) {
   const { t } = useT()
   const input = useRef<HTMLInputElement>(null)
   const [file, setFile] = useState<File | null>(null)
@@ -82,7 +86,7 @@ function UploadStep({ publicId, onDone }: { publicId: string; onDone: () => void
     setSending(true)
     setError(null)
     try {
-      await uploadPaymentProof(publicId, file)
+      await upload(file)
       onDone()
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) {
@@ -183,7 +187,7 @@ export function PaymentSteps({
           )}
         </Step>
         <Step n={2} title={t('pay.step.upload')} open={open === 2} onToggle={() => toggle(2)}>
-          <UploadStep publicId={publicId} onDone={onUploaded} />
+          <ProofUpload upload={(file) => uploadPaymentProof(publicId, file)} onDone={onUploaded} />
         </Step>
         <Step n={3} title={t('pay.step.wa')} open={open === 3} onToggle={() => toggle(3)}>
           {whatsapp ? (

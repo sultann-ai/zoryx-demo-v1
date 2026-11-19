@@ -1,4 +1,13 @@
-import { OrderItemStatus, OrderStatus, Prisma, TableCallStatus, TableCallType, TableSessionStatus } from "../../../generated/prisma/client";
+import {
+  OrderItemStatus,
+  OrderStatus,
+  Prisma,
+  TableBillStatus,
+  TableCallStatus,
+  TableCallType,
+  TableSessionStatus,
+  TableShareStatus,
+} from "../../../generated/prisma/client";
 import { prisma } from "../../config/prisma";
 import { getIO } from "../../config/socket";
 import { DerivedTableState, deriveTableState } from "./tableState";
@@ -59,6 +68,52 @@ export function summariseOrders(
   return { awaitingOrders, kitchenItems, readyItems, acceptedOrders };
 }
 
+// ---------- The bill (phase 2) ----------
+
+// A share with money attached: the split can't be rebuilt or cancelled while one exists.
+export const SHARE_STATUSES_WITH_MONEY: TableShareStatus[] = [TableShareStatus.PROOF_SUBMITTED, TableShareStatus.VERIFIED];
+
+export interface BillSummary {
+  status: TableBillStatus;
+  /** Shares of the current split that are VERIFIED. */
+  paid: number;
+  /** Shares of the current split (0 before a split, or after it was cancelled). */
+  of: number;
+  /** VERIFIED or PROOF_SUBMITTED: drives the map's PAYING state. */
+  paidOrSubmitted: number;
+}
+
+// The session's bill as the floor map and "table-bill:updated" show it; null when there is no bill.
+export async function loadBillSummary(db: Db, sessionId: string): Promise<BillSummary | null> {
+  const bill = await db.tableBill.findUnique({
+    where: { sessionId },
+    select: { status: true, splitVersion: true, shares: { select: { status: true, splitVersion: true } } },
+  });
+  return summariseBill(bill);
+}
+
+/** The pure part of loadBillSummary (getFloor reads the bills in its own query). */
+export function summariseBill(
+  bill: { status: TableBillStatus; splitVersion: number; shares: { status: TableShareStatus; splitVersion: number }[] } | null,
+): BillSummary | null {
+  if (!bill) {
+    return null;
+  }
+  const live = bill.shares.filter((share) => share.splitVersion === bill.splitVersion && share.status !== TableShareStatus.VOID);
+  return {
+    status: bill.status,
+    paid: live.filter((share) => share.status === TableShareStatus.VERIFIED).length,
+    of: live.length,
+    paidOrSubmitted: live.filter((share) => SHARE_STATUSES_WITH_MONEY.includes(share.status)).length,
+  };
+}
+
+// deriveTableState's bill inputs. A PAID bill (waiting only for staff to close) reads as PAYING, all paid.
+export function billStateInputs(bill: BillSummary | null): Pick<Parameters<typeof deriveTableState>[0], "billRequested" | "sharesPaidOrSubmitted"> {
+  const requested = bill !== null && (bill.status === TableBillStatus.REQUESTED || bill.status === TableBillStatus.PAID);
+  return { billRequested: requested, sharesPaidOrSubmitted: requested ? Math.max(bill.paidOrSubmitted, bill.status === TableBillStatus.PAID ? 1 : 0) : 0 };
+}
+
 export async function loadTableState(
   db: Db,
   diningAreaId: string,
@@ -78,11 +133,11 @@ export async function loadTableState(
     },
   });
   const session = table?.tableSessions[0] ?? null;
+  const bill = session ? await loadBillSummary(db, session.id) : null;
   const derived = deriveTableState({
     outOfService: table?.outOfService ?? false,
     hasOpenSession: session !== null,
-    billRequested: false,
-    sharesPaidOrSubmitted: 0,
+    ...billStateInputs(bill),
     ...callCounts(session?.calls ?? []),
     ...summariseOrders(session?.orders ?? []),
   });
@@ -118,6 +173,20 @@ export async function emitTableUpdated(diningAreaId: string): Promise<void> {
   }
 }
 
+// "table-bill:updated" (spec §6.2) after any bill or share change. Fire-and-forget after the commit.
+export async function emitTableBillUpdated(sessionId: string): Promise<void> {
+  try {
+    const session = await prisma.tableSession.findUnique({ where: { id: sessionId }, select: { diningAreaId: true } });
+    const bill = await loadBillSummary(prisma, sessionId);
+    if (!session || !bill) {
+      return;
+    }
+    emitToFloor("table-bill:updated", { sessionId, diningAreaId: session.diningAreaId, status: bill.status, paid: bill.paid, of: bill.of });
+  } catch (error) {
+    console.error("[table] could not emit table-bill:updated", error);
+  }
+}
+
 // Bumps the version a guest's poll ETag is built from. Call inside the transaction that made the change.
 export async function touchTableSession(db: Db, sessionId: string): Promise<void> {
   await db.tableSession.updateMany({ where: { id: sessionId }, data: { version: { increment: 1 } } });
@@ -138,6 +207,8 @@ export async function tableOrderChanged(tableSessionId: string | null | undefine
       select: { diningAreaId: true },
     });
     await emitTableUpdated(session.diningAreaId);
+    // An order change can cancel the bill's split (tableBillGuard.syncTableBill): tell the bill's watchers.
+    await emitTableBillUpdated(tableSessionId);
   } catch (error) {
     console.error("[table] could not record an order change on its table session", error);
   }

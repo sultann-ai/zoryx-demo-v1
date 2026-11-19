@@ -14,6 +14,10 @@ import { GuestOrderValidationError } from "../guestOrder/guestOrder.validators";
 import { isPlausibleGuestToken, isPlausibleQrKey } from "./guestToken";
 import * as service from "./tableGuest.service";
 import { parseJoinBody, parseTableCallBody, parseTableOrderBody, TableGuestValidationError } from "./tableGuest.validators";
+import { InvalidImageError, processProof } from "../../common/media/processImage";
+import * as billService from "../table/tableBill.service";
+import * as billValidators from "../table/tableBill.validators";
+import { TableStaffError } from "../table/tableErrors";
 
 // Every error on the public Table QR routes is { code, error } (like guest checkout), so the page can
 // branch on code.
@@ -25,6 +29,15 @@ function fail(res: Response, status: number, code: string, error: string, extra:
 function respondToKnownError(res: Response, error: unknown): boolean {
   if (error instanceof service.TableGuestError) {
     fail(res, error.status, error.code, error.message, error.extra);
+    return true;
+  }
+  // The table bill's refusals (shared with the staff routes) answer in the same { code, error } shape.
+  if (error instanceof TableStaffError) {
+    fail(res, error.status, error.code, error.message, error.extra);
+    return true;
+  }
+  if (error instanceof billValidators.BillValidationError) {
+    fail(res, 400, "BAD_REQUEST", error.message);
     return true;
   }
   if (error instanceof TableGuestValidationError || error instanceof GuestOrderValidationError) {
@@ -79,8 +92,10 @@ export async function requireTableGuest(req: Request, res: Response, next: NextF
   }
   const guest = await service.authenticateGuest(token);
   if (!guest) {
+    // The table was closed: the phone gets the receipt link with the 401 and keeps it (spec §6.3).
+    const receiptKey = await billService.receiptKeyForToken(token);
     const ended = service.sessionEnded();
-    fail(res, ended.status, ended.code, ended.message);
+    fail(res, ended.status, ended.code, ended.message, receiptKey ? { receiptKey } : {});
     return;
   }
   req.tableGuest = guest;
@@ -200,4 +215,109 @@ export async function cancelCall(req: Request, res: Response) {
       throw error;
     }
   }
+}
+
+// ================= The table bill (phase 2), guest side =================
+
+const guestActor = (req: Request) => {
+  const guest = req.tableGuest!;
+  return { kind: "guest" as const, guestId: guest.id, sessionId: guest.sessionId };
+};
+
+async function runBill(res: Response, work: () => Promise<unknown>) {
+  try {
+    res.json(await work());
+  } catch (error) {
+    if (!respondToKnownError(res, error)) {
+      throw error;
+    }
+  }
+}
+
+// POST /api/online/table/bill/request — {}
+export async function requestBill(req: Request, res: Response) {
+  await runBill(res, () => {
+    billValidators.parseEmpty(req.body);
+    return billService.requestBill(req.tableGuest!.sessionId, guestActor(req));
+  });
+}
+
+// PUT /api/online/table/bill/split — { mode: EQUAL|BY_ITEMS, parts? (EQUAL), expectedVersion }
+export async function setSplit(req: Request, res: Response) {
+  await runBill(res, () => billService.setSplit(req.tableGuest!.sessionId, guestActor(req), billValidators.parseGuestSplit(req.body)));
+}
+
+// PUT /api/online/table/bill/claims — { lineKind, lineId, claimed, expectedVersion }
+export async function setClaim(req: Request, res: Response) {
+  await runBill(res, () => billService.setClaim(req.tableGuest!.sessionId, guestActor(req), billValidators.parseClaim(req.body)));
+}
+
+// POST /api/online/table/bill/shares/:shareId/claim — { expectedVersion }
+export async function claimShare(req: Request, res: Response) {
+  await runBill(res, () =>
+    billService.claimShare(req.tableGuest!.sessionId, guestActor(req), req.params.shareId as string, billValidators.parseExpectedVersionOnly(req.body)),
+  );
+}
+
+// POST /api/online/table/bill/shares/:shareId/pay — { method: CASH|ONLINE }
+export async function payShare(req: Request, res: Response) {
+  await runBill(res, () =>
+    billService.payShare(req.tableGuest!.sessionId, guestActor(req), req.params.shareId as string, billValidators.parsePay(req.body)),
+  );
+}
+
+// POST /api/online/table/bill/shares/:shareId/payment-proof — multipart, one image in "file".
+export async function uploadShareProof(req: Request, res: Response) {
+  if (!req.file) {
+    fail(res, 400, "BAD_REQUEST", "file is required");
+    return;
+  }
+  let processed;
+  try {
+    processed = await processProof(req.file.buffer);
+  } catch (error) {
+    if (error instanceof InvalidImageError) {
+      fail(res, 400, "BAD_REQUEST", error.message);
+      return;
+    }
+    throw error;
+  }
+  await runBill(res, async () => {
+    await billService.attachShareProof(req.tableGuest!.sessionId, guestActor(req), req.params.shareId as string, processed);
+    return { status: "PROOF_SUBMITTED" };
+  });
+}
+
+// GET /api/online/table/receipt — the receipt link once the table is closed (the token is dead by then,
+// so this checks the token itself): 404 NOT_READY while the table is still open.
+export async function getReceiptKey(req: Request, res: Response) {
+  res.setHeader("Cache-Control", "no-store");
+  const token = req.headers[GUEST_TOKEN_HEADER];
+  if (!isPlausibleGuestToken(token)) {
+    const ended = service.sessionEnded();
+    fail(res, ended.status, ended.code, ended.message);
+    return;
+  }
+  const receiptKey = await billService.receiptKeyForToken(token);
+  if (receiptKey) {
+    res.json({ receiptKey });
+    return;
+  }
+  if (await service.authenticateGuest(token)) {
+    fail(res, 404, "NOT_READY", "The receipt is ready once the table is closed.");
+    return;
+  }
+  const ended = service.sessionEnded();
+  fail(res, ended.status, ended.code, ended.message);
+}
+
+// GET /api/online/receipts/:receiptKey — public; the long random link is the only key.
+export async function getPublicReceipt(req: Request, res: Response) {
+  res.setHeader("Cache-Control", "private, no-store");
+  const receipt = await billService.getPublicReceipt(req.params.receiptKey as string);
+  if (!receipt) {
+    fail(res, 404, "NOT_FOUND", "Receipt not found");
+    return;
+  }
+  res.json(receipt);
 }

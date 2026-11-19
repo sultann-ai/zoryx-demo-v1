@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { useStore } from '../../api/store'
 import { useCart } from '../../cart/context'
 import { useResolvedCart } from '../../cart/pricing'
@@ -16,7 +17,22 @@ import { SwipeRow } from '../mobile/SwipeRow'
 import { Button } from '../ui/Button'
 import { Photo } from './Photo'
 
-export function CartSheet({ closed, onClose, onContinue }: { closed: boolean; onClose: () => void; onContinue: () => void }) {
+/**
+ * The cart. The website's leads on to checkout; the table QR's (`table`) sends the order straight from here: its own
+ * note instead of the delivery fee, its own button label, a busy state while sending, and `message` for a cooldown
+ * or an error (which also holds the button back when `blocked`).
+ */
+export function CartSheet({
+  closed,
+  onClose,
+  onContinue,
+  table,
+}: {
+  closed: boolean
+  onClose: () => void
+  onContinue: () => void
+  table?: { note: ReactNode; sendLabel: string; busy: boolean; blocked: boolean; message: ReactNode }
+}) {
   const { t, lang } = useT()
   const cart = useCart()
   const phone = useIsPhone() // phones: a full-screen page with swipe-to-remove rows and a "Checkout" button
@@ -25,6 +41,7 @@ export function CartSheet({ closed, onClose, onContinue }: { closed: boolean; on
   const lowestFee = areas.length
     ? Math.min(...areas.map((a) => Number.parseFloat(a.deliveryFee)).filter(Number.isFinite))
     : null
+  const label = table ? table.sendLabel : phone ? t('cart.checkout') : t('cart.continue')
 
   return (
     <Sheet
@@ -42,22 +59,30 @@ export function CartSheet({ closed, onClose, onContinue }: { closed: boolean; on
                 {formatRs(total)}
               </span>
             </div>
-            {lowestFee !== null && Number.isFinite(lowestFee) && (
-              <p className="text-sm text-muted">
-                <Fill text={t('cart.deliveryFrom')} values={{ price: formatRs(lowestFee) }} />
-              </p>
+            {table ? (
+              <p className="text-sm text-muted">{table.note}</p>
+            ) : (
+              <>
+                {lowestFee !== null && Number.isFinite(lowestFee) && (
+                  <p className="text-sm text-muted">
+                    <Fill text={t('cart.deliveryFrom')} values={{ price: formatRs(lowestFee) }} />
+                  </p>
+                )}
+                <p className="text-sm text-muted">{t('cart.checkoutNote')}</p>
+              </>
             )}
-            <p className="text-sm text-muted">{t('cart.checkoutNote')}</p>
           </div>
-          {closed && <p className="text-base font-bold text-accent">{t('cart.closedHint')}</p>}
+          {closed && <p className="text-base font-bold text-accent">{t(table ? 'table.closedHint' : 'cart.closedHint')}</p>}
+          {table?.message}
           <button
             type="button"
-            disabled={closed || lines.length === 0}
+            disabled={closed || lines.length === 0 || table?.busy || table?.blocked}
+            aria-busy={table?.busy || undefined}
             onClick={onContinue}
             className={`${buttonClass('primary', 'lg', 'w-full')} disabled:opacity-40`}
           >
-            <span>{phone ? t('cart.checkout') : t('cart.continue')}</span>
-            <Icon name="arrow" mirror />
+            <span>{table?.busy ? t('checkout.sending') : label}</span>
+            {!table?.busy && <Icon name="arrow" mirror />}
           </button>
           {!phone && <UndoToast announce className="justify-between" />}
         </div>
@@ -82,6 +107,12 @@ export function CartSheet({ closed, onClose, onContinue }: { closed: boolean; on
                   <p className="font-bold leading-snug text-ink">{name}</p>
                   {l.variantLabel && <p className="text-sm text-muted">{l.variantLabel}</p>}
                   {l.addOns.length > 0 && <p className="text-sm text-muted">+ {l.addOns.map((a) => a.name).join('، ')}</p>}
+                  {l.line.notes && (
+                    <p className="flex items-start gap-1 text-sm text-muted">
+                      <Icon name="note" className="mt-1 size-4" />
+                      <span className="min-w-0 break-words">{l.line.notes}</span>
+                    </p>
+                  )}
                   <p dir="ltr" className="text-start font-bold text-ink">
                     {formatRs(l.total)}
                   </p>

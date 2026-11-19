@@ -1,6 +1,7 @@
 import { NextFunction, Request, Response } from "express";
 import { MulterError } from "multer";
 import { UploadRejectedError } from "../../config/uploadRules";
+import { TableStaffError } from "../../modules/table/tableErrors";
 
 // body-parser tags its errors with `type`; anything else keeps the generic 500.
 function bodyParserStatus(err: unknown): { status: number; error: string } | null {
@@ -18,6 +19,12 @@ function bodyParserStatus(err: unknown): { status: number; error: string } | nul
 }
 
 export function errorHandler(err: unknown, _req: Request, res: Response, _next: NextFunction) {
+  // A Table QR refusal raised inside another module's route (an order change that would break a table's
+  // bill split: SPLIT_HAS_PAYMENTS, or paying an order one by one while the table has a bill: USE_TABLE_BILL).
+  if (err instanceof TableStaffError) {
+    res.status(err.status).json({ error: err.message, code: err.code, ...err.extra });
+    return;
+  }
   if (err instanceof UploadRejectedError) {
     res.status(400).json({ error: err.message });
     return;

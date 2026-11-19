@@ -6,7 +6,18 @@ import { useT } from '../../i18n'
 import { ProductCard } from '../ui/ProductCard'
 
 /** A deal is a fixed bundle (the API has no choice slots), so Add puts it straight in the cart. */
-export function DealCard({ deal, closed, priority = false }: { deal: Deal; closed: boolean; priority?: boolean }) {
+export function DealCard({
+  deal,
+  closed,
+  priority = false,
+  readOnly = false,
+}: {
+  deal: Deal
+  closed: boolean
+  priority?: boolean
+  /** Look only (a table that isn't seated yet): no "+" at all. */
+  readOnly?: boolean
+}) {
   const { t, lang } = useT()
   const cart = useCart()
   const name = pick(lang, deal.name, deal.nameUr) ?? deal.name
@@ -36,6 +47,7 @@ export function DealCard({ deal, closed, priority = false }: { deal: Deal; close
       onAdd={() => cart.add({ kind: 'deal', id: deal.id, variantId: null, addOnIds: [] })}
       disabled={closed}
       priority={priority}
+      readOnly={readOnly}
     />
   )
 }

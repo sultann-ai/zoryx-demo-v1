@@ -18,6 +18,7 @@ export function AppBar({
   title,
   showTitle,
   onBack,
+  call = true,
 }: {
   /** null on Home, where the brand logo is the title. */
   title: ReactNode | null
@@ -25,6 +26,8 @@ export function AppBar({
   showTitle: boolean
   /** Present on inner screens only. */
   onBack?: () => void
+  /** The shop's call button. Off at a table, where "Call waiter" is the way to reach someone. */
+  call?: boolean
 }) {
   const { t } = useT()
   const phone = useShopPhone()
@@ -47,9 +50,11 @@ export function AppBar({
           )}
         </div>
         <LanguageToggle />
-        <a href={phoneHref(phone)} aria-label={`${t('contact.call')} ${phone}`} className={roundButton}>
-          <Icon name="phone" />
-        </a>
+        {call && (
+          <a href={phoneHref(phone)} aria-label={`${t('contact.call')} ${phone}`} className={roundButton}>
+            <Icon name="phone" />
+          </a>
+        )}
       </div>
     </header>
   )

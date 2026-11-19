@@ -107,8 +107,9 @@ export async function releaseMediaIfUnreferenced(
     (await tx.category.count({ where: { imageId: assetId } })) +
     (await tx.galleryImage.count({ where: { mediaId: assetId } })) +
     (await tx.paymentAccount.count({ where: { qrMediaId: assetId } })) +
-    // A payment proof is referenced only by its order.
-    (await tx.order.count({ where: { paymentProofMediaId: assetId } }));
+    // A payment proof is referenced only by its order, or by a table guest's share of a bill.
+    (await tx.order.count({ where: { paymentProofMediaId: assetId } })) +
+    (await tx.tableBillShare.count({ where: { paymentProofMediaId: assetId } }));
   if (references === 0) {
     await tx.mediaAsset.deleteMany({ where: { id: assetId } });
   }
@@ -127,6 +128,7 @@ export async function purgeOrphanMedia(olderThan: Date): Promise<number> {
       galleryImages: { none: {} },
       paymentAccounts: { none: {} },
       paymentProofOrders: { none: {} },
+      tableBillShareProofs: { none: {} },
     },
   });
   return result.count;

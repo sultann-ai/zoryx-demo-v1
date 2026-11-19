@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
-import { apiFetch } from './client'
+import { useContext } from 'react'
+import { MenuSourceContext } from './menuSource'
 import type { ImageUrls } from './store'
 
 export interface AddOn {
@@ -53,11 +54,9 @@ export interface PublicMenu {
   items: MenuItem[]
 }
 
+/** The menu of the surrounding MenuSource: the online menu, or the table QR menu inside the table pages. */
 export function useMenu() {
-  return useQuery({
-    queryKey: ['menu'],
-    queryFn: () => apiFetch<PublicMenu>('/api/online/menu'),
-  })
+  return useQuery(useContext(MenuSourceContext).menu)
 }
 
 /** The price to show on a card: the item's own, else the cheapest size ("from"). */

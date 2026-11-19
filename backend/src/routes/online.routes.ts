@@ -9,7 +9,7 @@ import { onlineMediaRouter } from "../modules/media/media.routes";
 import { onlineMenuRouter } from "../modules/menu/menu.routes";
 import { onlineOrderRouter, paymentAdminRouter } from "../modules/payment/payment.routes";
 import { onlineStoreRouter } from "../modules/store/store.routes";
-import { tableGuestRouter } from "../modules/tableGuest/tableGuest.routes";
+import { tableGuestRouter, tableReceiptRouter } from "../modules/tableGuest/tableGuest.routes";
 
 export const onlineRouter = Router();
 
@@ -33,6 +33,7 @@ onlineRouter.use("/orders", publicOrderRouter);
 // Table QR — guests at a table (docs/TABLE_QR_SPEC.md). Public; its own limiters (the general one
 // skips /table), guest routes authenticated by the X-Table-Token header.
 onlineRouter.use("/table", tableGuestRouter);
+onlineRouter.use("/receipts", tableReceiptRouter);
 
 onlineRouter.use("/store", onlineStoreRouter);
 onlineRouter.use("/menu", onlineMenuRouter);

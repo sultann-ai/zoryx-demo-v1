@@ -3,14 +3,14 @@ import { Outlet, useLocation, useNavigate, useNavigationType } from 'react-route
 import { directionFor, isIOS, navigateWithTransition, navigationCommitted, type NavDirection } from '../../lib/navTransition'
 import { TAB_ROOTS, useScrollMemory } from '../../lib/scrollMemory'
 import { useThemeColor } from '../../lib/useThemeColor'
+import { useTyping } from '../../lib/useTyping'
 import { useT, type TranslationKey } from '../../i18n'
 import { OfflineBanner } from '../OfflineBanner'
-import { useCart } from '../../cart/context'
-import { showToast } from '../../lib/toast'
 import { Splash } from './AppState'
 import { PageToasts } from './ToastHost'
 import { AppBar } from './AppBar'
 import { CartHost } from './CartHost'
+import { CartToasts } from './CartToasts'
 import { MiniCart } from './MiniCart'
 import { TabBar } from './TabBar'
 
@@ -25,23 +25,6 @@ function smallTitleKey(pathname: string): TranslationKey | null {
   if (largeTitles[pathname]) return largeTitles[pathname]
   if (pathname === '/orders' || pathname.startsWith('/order/')) return 'orders.title'
   return 'brand.name'
-}
-
-const isTypingField = (el: EventTarget | null): boolean =>
-  el instanceof HTMLElement &&
-  (el.matches('textarea, select') || (el.matches('input') && !/^(checkbox|radio|button|submit|reset|range|file|color)$/.test((el as HTMLInputElement).type)))
-
-/** Cart removals become a snackbar with Undo (the cart keeps the removed line until the snackbar goes away). */
-function CartToasts() {
-  const { t } = useT()
-  const { removed, undoRemove, dismissRemoved } = useCart()
-  useEffect(() => {
-    if (!removed) return
-    showToast({ message: t('cart.removed'), action: { label: t('cart.undo'), run: undoRemove }, onClose: dismissRemoved })
-    // only a new removal should raise a toast
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [removed])
-  return null
 }
 
 /** The large title: a sentinel for the app bar. Reports whether it is still on screen below the bar. */
@@ -74,7 +57,7 @@ export function MobileShell() {
   const navigate = useNavigate()
   const navigationType = useNavigationType()
   const mainRef = useRef<HTMLElement>(null)
-  const [typing, setTyping] = useState(false)
+  const typing = useTyping()
   const [largeVisible, setLargeVisible] = useState(true)
 
   useScrollMemory()
@@ -118,36 +101,6 @@ export function MobileShell() {
     }
     document.addEventListener('click', onClick, true)
     return () => document.removeEventListener('click', onClick, true)
-  }, [])
-
-  // The keyboard is up: the tab bar steps aside, and the focused field is brought into the middle of what is left, again
-  // whenever the visible area changes (the keyboard finishing its slide, or resizing the visual viewport on iPhone).
-  useEffect(() => {
-    const reveal = (el: Element | null) => {
-      if (!isTypingField(el)) return
-      const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-      ;(el as HTMLElement).scrollIntoView({ block: 'center', behavior: reduce ? 'auto' : 'smooth' })
-    }
-    let timer = 0
-    const onIn = (event: FocusEvent) => {
-      setTyping(isTypingField(event.target))
-      window.clearTimeout(timer)
-      timer = window.setTimeout(() => reveal(event.target as Element), 280)
-    }
-    const onOut = () => setTyping(false)
-    const onViewport = () => {
-      window.clearTimeout(timer)
-      timer = window.setTimeout(() => reveal(document.activeElement), 60)
-    }
-    document.addEventListener('focusin', onIn)
-    document.addEventListener('focusout', onOut)
-    window.visualViewport?.addEventListener('resize', onViewport)
-    return () => {
-      window.clearTimeout(timer)
-      document.removeEventListener('focusin', onIn)
-      document.removeEventListener('focusout', onOut)
-      window.visualViewport?.removeEventListener('resize', onViewport)
-    }
   }, [])
 
   const large = largeTitles[pathname]

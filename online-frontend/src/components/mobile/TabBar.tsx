@@ -10,9 +10,10 @@ import { setCartPanel } from '../../lib/cartPanel'
 import { useT, type TranslationKey } from '../../i18n'
 import { Icon, type IconName } from '../Icon'
 
-const tabClass = 'tab-item relative flex min-w-0 flex-col items-center justify-start pt-[3px] text-center'
+export const tabClass = 'tab-item relative flex min-w-0 flex-col items-center justify-start pt-[3px] text-center'
 
-function Tab({ to, icon, label, active, badge }: { to: string; icon: IconName; label: TranslationKey; active: boolean; badge?: ReactNode }) {
+/** One tab of a bottom tab bar (also used by the table QR shell's own bar). */
+export function Tab({ to, icon, label, active, badge }: { to: string; icon: IconName; label: TranslationKey; active: boolean; badge?: ReactNode }) {
   const { t } = useT()
   return (
     <Link to={to} aria-current={active ? 'page' : undefined} className={`${tabClass} ${active ? 'font-bold text-ink' : 'text-muted'}`}>
@@ -53,6 +54,35 @@ function CartTotal() {
   )
 }
 
+/** The Cart tab: a button (it opens the cart sheet, not a page) with a live count badge and, once there is something in it, the total. */
+export function CartTab() {
+  const { t } = useT()
+  const { count } = useCart()
+  const bump = useCartBump()
+  return (
+    <button
+      type="button"
+      onClick={() => setCartPanel('cart')}
+      aria-haspopup="dialog"
+      aria-label={`${t('nav.cart')}${count > 0 ? ` (${count})` : ''}`}
+      className={`${tabClass} text-muted`}
+    >
+      <span key={bump} className={`relative flex h-[24px] w-12 items-center justify-center ${bump > 0 ? 'pop' : ''}`}>
+        <Icon name="cart" className="size-[22px]" />
+        {count > 0 && (
+          <span
+            dir="ltr"
+            className="absolute -top-1 end-0 flex min-w-5 items-center justify-center rounded-full bg-action px-1 text-sm font-bold leading-5 text-on-action"
+          >
+            {count}
+          </span>
+        )}
+      </span>
+      {count > 0 ? <CartTotal /> : <span className="tab-label max-w-full truncate">{t('nav.cartTab')}</span>}
+    </button>
+  )
+}
+
 /**
  * Bottom tab bar (phones): Home, Menu, Cart, Orders, More. 56px plus the home-indicator inset. A <nav>; the current
  * tab carries aria-current. Tabs sit in DOM order, so right-to-left mirrors them with no extra code. The Cart tab is
@@ -60,8 +90,6 @@ function CartTotal() {
  */
 export function TabBar({ hidden }: { hidden: boolean }) {
   const { t } = useT()
-  const { count } = useCart()
-  const bump = useCartBump()
   const { pathname } = useLocation()
   const ordersActive = pathname === '/orders' || pathname.startsWith('/order/')
 
@@ -74,26 +102,7 @@ export function TabBar({ hidden }: { hidden: boolean }) {
       <div className="grid h-[56px] border-t border-ink/10 grid-cols-[1fr_1fr_1.35fr_1fr_1fr]">
         <Tab to="/" icon="home" label="nav.home" active={pathname === '/'} />
         <Tab to="/menu" icon="list" label="nav.menu" active={pathname === '/menu'} />
-        <button
-          type="button"
-          onClick={() => setCartPanel('cart')}
-          aria-haspopup="dialog"
-          aria-label={`${t('nav.cart')}${count > 0 ? ` (${count})` : ''}`}
-          className={`${tabClass} text-muted`}
-        >
-          <span key={bump} className={`relative flex h-[24px] w-12 items-center justify-center ${bump > 0 ? 'pop' : ''}`}>
-            <Icon name="cart" className="size-[22px]" />
-            {count > 0 && (
-              <span
-                dir="ltr"
-                className="absolute -top-1 end-0 flex min-w-5 items-center justify-center rounded-full bg-action px-1 text-sm font-bold leading-5 text-on-action"
-              >
-                {count}
-              </span>
-            )}
-          </span>
-          {count > 0 ? <CartTotal /> : <span className="tab-label max-w-full truncate">{t('nav.cartTab')}</span>}
-        </button>
+        <CartTab />
         <Tab to="/orders" icon="receipt" label="nav.orders" active={ordersActive} badge={<OrderDot />} />
         <Tab to="/more" icon="more" label="nav.more" active={pathname === '/more'} />
       </div>

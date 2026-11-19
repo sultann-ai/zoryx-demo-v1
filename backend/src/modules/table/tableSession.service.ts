@@ -8,10 +8,11 @@ import {
 import { prisma } from "../../config/prisma";
 import { generateJoinPin, generateQrKey } from "../tableGuest/guestToken";
 import { getSiteSettings } from "../siteContent/siteContent.service";
-import { callCounts, emitTableUpdated, emitToFloor, summariseOrders, touchTableSession } from "./tableNotify";
+import { billStateInputs, callCounts, emitTableUpdated, emitToFloor, summariseBill, summariseOrders, touchTableSession } from "./tableNotify";
 import { deriveTableState } from "./tableState";
 import { TableStaffError } from "./tableErrors";
 import { cancelOpenCallsInTransaction, emitCallsCancelled, OPEN_CALL_STATUSES } from "./tableCall.service";
+import { closeTable, staffBillView } from "./tableBill.service";
 
 // Staff side of Table QR sessions (docs/TABLE_QR_SPEC.md §3.1, §4.2). Every refusal carries a code the
 // POS branches on, and every state change is a conditional write, so a lost race answers 409 instead of
@@ -31,15 +32,6 @@ export async function assertWaiter(staffId: string): Promise<void> {
     throw new TableStaffError(400, "BAD_WAITER", "waiterStaffId must be an active order taker, POS admin or super admin");
   }
 }
-
-// An order still in any of these keeps a table open (phase 1: it must be completed or cancelled first).
-const OPEN_ORDER_STATUSES: OrderStatus[] = [
-  OrderStatus.AWAITING_RECEPTION,
-  OrderStatus.PENDING,
-  OrderStatus.CONFIRMED,
-  OrderStatus.IN_KITCHEN,
-  OrderStatus.READY,
-];
 
 async function recordSessionEvent(
   tx: Prisma.TransactionClient,
@@ -197,6 +189,7 @@ export async function getSessionDetail(id: string) {
     table: diningArea,
     guests: guests.map(({ revokedAt, createdAt, ...guest }) => ({ ...guest, joinedAt: createdAt, revoked: revokedAt !== null })),
     orders: session.orders,
+    bill: await staffBillView(prisma, id),
     events: events.map(({ actor, ...event }) => ({ ...event, actorName: actor?.name ?? null })),
   };
 }
@@ -286,38 +279,10 @@ export async function removeGuest(id: string, guestId: string, actorId: string, 
 
 // ================= Close / void =================
 
-// Phase 1: a table closes once none of its orders is still open (each completed or cancelled). Every
-// guest token dies with it (tokens are only valid while the session is OPEN).
-export async function closeSession(id: string, actorId: string) {
-  const session = await loadOpenSession(id);
-  const openOrders = await prisma.order.findMany({
-    where: { tableSessionId: id, status: { in: OPEN_ORDER_STATUSES } },
-    select: { id: true, orderNumber: true, status: true },
-  });
-  if (openOrders.length > 0) {
-    throw new TableStaffError(409, "SESSION_HAS_OPEN_ORDERS", "Complete or cancel this table's open orders first", {
-      orderIds: openOrders.map((order) => order.id),
-      openOrders,
-    });
-  }
-  const closed = await prisma.$transaction(async (tx) => {
-    // The update row-locks the session; a guest's round locks the same row in its guard. So either the
-    // round committed first and is counted here (the close rolls back), or it sees CLOSED and is refused.
-    await updateOpenSession(tx, id, { status: TableSessionStatus.CLOSED, closedAt: new Date(), closedById: actorId, version: { increment: 1 } });
-    const raced = await tx.order.count({ where: { tableSessionId: id, status: { in: OPEN_ORDER_STATUSES } } });
-    if (raced > 0) {
-      throw new TableStaffError(409, "SESSION_HAS_OPEN_ORDERS", "A new order just arrived for this table");
-    }
-    await recordSessionEvent(tx, { sessionId: id, type: TableSessionEventType.CLOSED, actorId });
-    // Calls still open at a closed table are moot: cancelled with it.
-    const cancelledCalls = await cancelOpenCallsInTransaction(tx, id);
-    const session = await tx.tableSession.findUniqueOrThrow({ where: { id }, select: { id: true, diningAreaId: true, status: true, closedAt: true } });
-    return { session, cancelledCalls };
-  });
-  await emitCallsCancelled(closed.cancelledCalls);
-  emitToFloor("table-session:updated", sessionUpdatedPayload(closed.session));
-  await emitTableUpdated(session.diningAreaId);
-  return { session: closed.session };
+// Closing a table (phase 1 and the phase-2 bill settlement, receipt, idempotent repeat) lives in
+// tableBill.service: a paid bill completes its orders in the same transaction that ends the session.
+export function closeSession(id: string, actorId: string) {
+  return closeTable(id, actorId);
 }
 
 // Seated by mistake / guests left before anything was accepted. Rounds still waiting at reception are
@@ -393,6 +358,7 @@ export async function getFloor(area?: string) {
             select: { id: true, type: true, status: true, createdAt: true, escalatedAt: true },
             orderBy: { createdAt: "asc" },
           },
+          bill: { select: { status: true, splitVersion: true, shares: { select: { status: true, splitVersion: true } } } },
         },
       },
     },
@@ -406,11 +372,11 @@ export async function getFloor(area?: string) {
     tables: tables.map((table) => {
       const session = table.tableSessions[0] ?? null;
       const counts = summariseOrders(session?.orders ?? []);
+      const bill = summariseBill(session?.bill ?? null);
       const derived = deriveTableState({
         outOfService: table.outOfService,
         hasOpenSession: session !== null,
-        billRequested: false,
-        sharesPaidOrSubmitted: 0,
+        ...billStateInputs(bill),
         ...callCounts(session?.calls ?? []),
         ...counts,
       });
@@ -442,7 +408,7 @@ export async function getFloor(area?: string) {
                 createdAt: call.createdAt,
                 escalated: call.escalatedAt !== null,
               })),
-              bill: null,
+              bill: bill ? { status: bill.status, paid: bill.paid, of: bill.of } : null,
             }
           : null,
       };
