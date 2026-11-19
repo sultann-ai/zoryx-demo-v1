@@ -1,6 +1,6 @@
 # Table QR — build spec
 
-Status: **backend build steps 1–3 built, POS steps 4–5 built, customer step 6 built, QR print sheet step 7 built, bill backend step 8 built, customer bill UI step 9 built** (2026-11-19; step 5 partly, see below); steps 10–12 not started. Written 2026-11-19 from the code as it stands on `demo` (`e5316f2`). Every later Table QR session builds from this file. If the code and this spec disagree, read §11 (Conflicts) first, then fix whichever one is wrong in the same task and say so.
+Status: **backend build steps 1–3 built, POS steps 4–5 built, customer step 6 built, QR print sheet step 7 built, bill backend step 8 built, customer bill UI step 9 built, staff bill UI step 10 built** (2026-11-19; step 5 partly, see below); steps 11–12 not started. Written 2026-11-19 from the code as it stands on `demo` (`e5316f2`). Every later Table QR session builds from this file. If the code and this spec disagree, read §11 (Conflicts) first, then fix whichever one is wrong in the same task and say so.
 
 **Deviations in what's built** (steps 1–3):
 - The session `version` bump after an order change (§5.2) runs right after the order's own commit, not inside it (`table/tableNotify.ts`'s `tableOrderChanged`). A poll landing in those milliseconds may get one last 304; the next poll sees the change.

@@ -58,6 +58,9 @@ import { COMPLETABLE_STATUSES, CompleteOrderDialog } from "../components/Complet
 import { ConfirmPaymentForm } from "../components/ConfirmPaymentForm";
 import { EditableLineNote } from "./orderDetail/EditableLineNote";
 import { OrderHistory } from "./orderDetail/OrderHistory";
+import { TableBillPanel } from "./tables/TableBillPanel";
+import { useTableSession } from "../hooks/useTables";
+import { useAuth } from "../context/AuthContext";
 
 const CLOSED_STATUSES = new Set(["CANCELLED", "COMPLETED"]);
 // The only statuses the server lets PATCH /:id/cancel act on (a scheduled order uses cancel-scheduled).
@@ -104,6 +107,8 @@ export function OrderDetailPage() {
   const orderId = id ?? "";
 
   const { data: order, isLoading, isError } = useOrder(orderId);
+  const { staff } = useAuth();
+  const { data: tableSession } = useTableSession(order?.tableSession?.id ?? null);
   const { data: kitchens, isError: isKitchensError } = useKitchens();
   const { data: employees, isError: isEmployeesError } = useEmployees();
   const { data: diningAreas, isError: isDiningAreasError } = useDiningAreas();
@@ -493,6 +498,14 @@ export function OrderDetailPage() {
       )}
 
       {printFeedback?.origin === "header" && <PrintFeedbackMessage feedback={printFeedback} />}
+
+      {order.tableSession && tableSession && (
+        <TableBillPanel
+          sessionId={order.tableSession.id}
+          bill={tableSession.bill}
+          isAdmin={staff?.role === "SUPER_ADMIN" || staff?.role === "POS_ADMIN"}
+        />
+      )}
 
       {(isKitchensError || isEmployeesError || isDiningAreasError) && (
         <p role="alert" className="text-body text-status-danger-text">

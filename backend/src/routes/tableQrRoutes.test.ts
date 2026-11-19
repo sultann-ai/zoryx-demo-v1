@@ -180,16 +180,18 @@ describe("staff Table QR routes: roles", () => {
     expect(reaches((await call("PATCH", "/api/pos/menu/m1/qr-availability", { role: "ONLINE_ADMIN", body: { isAvailableOnQr: true } })).status)).toBe(true);
   });
 
-  it("the table bill: asking for it and reading the receipt are floor actions; discount, split and payments are SA/PA only", async () => {
+  it("the table bill: asking for it, cash collected and the receipt are floor actions; discount, split and proofs are SA/PA only", async () => {
     for (const role of ["SUPER_ADMIN", "POS_ADMIN", "ORDER_TAKER"]) {
       expect(reaches((await call("POST", "/api/pos/table-sessions/s1/bill", { role })).status), role).toBe(true);
       expect(reaches((await call("GET", "/api/pos/table-sessions/s1/receipt", { role })).status), role).toBe(true);
+      // An ORDER_TAKER reaches it; the service then allows only the table's own waiter (NOT_YOUR_TABLE).
+      expect(reaches((await call("POST", "/api/pos/table-sessions/s1/bill/shares/sh1/mark-paid", { role })).status), role).toBe(true);
     }
+    expect((await call("POST", "/api/pos/table-sessions/s1/bill/shares/sh1/mark-paid", { role: "KITCHEN" })).status).toBe(403);
     for (const [method, path] of [
       ["POST", "/api/pos/table-sessions/s1/bill/unlock"],
       ["PUT", "/api/pos/table-sessions/s1/bill/discount"],
       ["PUT", "/api/pos/table-sessions/s1/bill/split"],
-      ["POST", "/api/pos/table-sessions/s1/bill/shares/sh1/mark-paid"],
       ["POST", "/api/pos/table-sessions/s1/bill/shares/sh1/verify"],
       ["POST", "/api/pos/table-sessions/s1/bill/shares/sh1/reject"],
       ["POST", "/api/pos/table-sessions/s1/bill/shares/sh1/unmark"],
@@ -204,5 +206,16 @@ describe("staff Table QR routes: roles", () => {
     expect(badDiscount.status).toBe(400);
     const extra = await call("PUT", "/api/pos/table-sessions/s1/bill/split", { role: "POS_ADMIN", body: { mode: "EQUAL", total: "1", expectedVersion: 0 } });
     expect(extra.status).toBe(400);
+  });
+
+  it("keeps raw print jobs out of ORDER_TAKER hands while exposing only the bound receipt printer route", async () => {
+    expect((await call("POST", "/api/pos/print", {
+      role: "ORDER_TAKER",
+      body: { docs: [{ blocks: [{ t: "drawer" }] }] },
+    })).status).toBe(403);
+    expect((await call("POST", "/api/pos/table-sessions/s1/receipt/print", {
+      role: "ORDER_TAKER",
+      body: {},
+    })).status).not.toBe(403);
   });
 });

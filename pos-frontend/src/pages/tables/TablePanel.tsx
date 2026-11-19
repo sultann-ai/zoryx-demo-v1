@@ -20,6 +20,7 @@ import { useTableCallsContext } from "../../context/TableCallsContext";
 import { CallCard } from "./CallCard";
 import { PanelSkeleton } from "./FloorSkeleton";
 import { TABLE_STATE_META, areaLabel, formatElapsed } from "./tableStates";
+import { TableBillPanel } from "./TableBillPanel";
 
 interface TablePanelProps {
   table: FloorTable;
@@ -205,7 +206,8 @@ function SessionBlock({
         )}
       </Section>
 
-      <CloseBlock sessionId={sessionId} />
+      <TableBillPanel sessionId={sessionId} bill={data.bill} isAdmin={isAdmin} />
+      {!data.bill && <CloseBlock sessionId={sessionId} />}
     </div>
   );
 }

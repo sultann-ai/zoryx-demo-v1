@@ -321,6 +321,8 @@ export async function staffBillView(db: Tx | typeof prisma, sessionId: string) {
     shares: live.map((share) => ({
       ...shareView(share, null),
       hasProof: share.paymentProofMediaId !== null,
+      // Changes when the guest uploads a new proof, so the POS fetches the new image (staff view only).
+      proofMediaId: share.paymentProofMediaId,
       paidAmount: share.paidAmount ? moneyStr(share.paidAmount) : null,
       change: share.paidAmount ? moneyStr(share.paidAmount.minus(share.amount)) : null,
       verifiedAt: share.verifiedAt,
@@ -856,10 +858,16 @@ async function staffShare(tx: Tx, sessionId: string, actor: BillActor, shareId: 
   return { session, bill, totals, share, current: share.splitVersion === bill.splitVersion && share.status !== TableShareStatus.VOID };
 }
 
-/** Cash collected at the table: UNPAID / PROOF_SUBMITTED / REJECTED → VERIFIED. paidAmount (optional) ≥ amount; change is computed. */
+/**
+ * Cash collected at the table: UNPAID / PROOF_SUBMITTED / REJECTED → VERIFIED. paidAmount (optional) ≥ amount; change is computed.
+ * SA, PA; an ORDER_TAKER only at a table that is theirs (the session's waiter), checked under the session lock.
+ */
 export function markSharePaid(sessionId: string, actor: Extract<BillActor, { kind: "staff" }>, shareId: string, paidAmount: Decimal | null) {
   return writeBill(actor, sessionId, async (tx) => {
     const { session, bill, totals, share, current } = await staffShare(tx, sessionId, actor, shareId);
+    if (actor.role === StaffRole.ORDER_TAKER && session.waiterStaffId !== actor.id) {
+      throw fail(403, "NOT_YOUR_TABLE", "Only this table's waiter or an admin can take its cash");
+    }
     if (current && share.status === TableShareStatus.VERIFIED) {
       return { changed: false, diningAreaId: session.diningAreaId };
     }
@@ -1175,8 +1183,14 @@ export async function getPublicReceipt(receiptKey: string) {
 }
 
 /** Staff: the session's receipt with its link, or null before the table is closed. */
-export async function getSessionReceipt(sessionId: string) {
-  const receipt = await prisma.tableReceipt.findUnique({ where: { sessionId }, select: { receiptKey: true, snapshot: true } });
+export async function getSessionReceipt(sessionId: string, actor?: Extract<BillActor, { kind: "staff" }>) {
+  const receipt = await prisma.tableReceipt.findUnique({
+    where: { sessionId },
+    select: { receiptKey: true, snapshot: true, session: { select: { waiterStaffId: true } } },
+  });
+  if (receipt && actor?.role === StaffRole.ORDER_TAKER && receipt.session.waiterStaffId !== actor.id) {
+    throw fail(403, "NOT_YOUR_TABLE", "Only this table's waiter or an admin can print its receipt");
+  }
   return receipt ? { receiptKey: receipt.receiptKey, receipt: receipt.snapshot } : null;
 }
 

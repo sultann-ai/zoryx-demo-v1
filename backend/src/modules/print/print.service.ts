@@ -10,6 +10,96 @@ export interface ValidatedPrintRequest {
 
 export type ValidationResult = { ok: true; value: ValidatedPrintRequest } | { ok: false; error: string };
 
+type TableReceiptSnapshot = {
+  shop: { nameEn: string | null; addressEn: string | null; phone: string | null };
+  table: { name: string; area: string | null };
+  issuedAt: string;
+  orders: { orderNumber: number; guestName: string | null; lines: { name: string; size: string | null; addOns: string[]; quantity: number; lineTotal: string }[] }[];
+  subtotal: string;
+  discount: string;
+  total: string;
+  shares: { label: string; amount: string; method: "CASH" | "ONLINE" | null }[];
+  isDemo: boolean;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isTableReceiptSnapshot(value: unknown): value is TableReceiptSnapshot {
+  if (!isRecord(value) || !isRecord(value.shop) || !isRecord(value.table) || !Array.isArray(value.orders) || !Array.isArray(value.shares)) {
+    return false;
+  }
+  if (
+    (value.shop.nameEn !== null && typeof value.shop.nameEn !== "string") ||
+    (value.shop.addressEn !== null && typeof value.shop.addressEn !== "string") ||
+    (value.shop.phone !== null && typeof value.shop.phone !== "string") ||
+    typeof value.table.name !== "string" ||
+    (value.table.area !== null && typeof value.table.area !== "string") ||
+    typeof value.issuedAt !== "string" ||
+    typeof value.subtotal !== "string" ||
+    typeof value.discount !== "string" ||
+    typeof value.total !== "string" ||
+    typeof value.isDemo !== "boolean"
+  ) {
+    return false;
+  }
+  return value.orders.every((order) => {
+    if (!isRecord(order) || typeof order.orderNumber !== "number" || (order.guestName !== null && typeof order.guestName !== "string") || !Array.isArray(order.lines)) {
+      return false;
+    }
+    return order.lines.every(
+      (line) =>
+        isRecord(line) &&
+        typeof line.name === "string" &&
+        (line.size === null || typeof line.size === "string") &&
+        Array.isArray(line.addOns) &&
+        line.addOns.every((name) => typeof name === "string") &&
+        Number.isInteger(line.quantity) &&
+        typeof line.lineTotal === "string",
+    );
+  }) && value.shares.every(
+    (share) =>
+      isRecord(share) &&
+      typeof share.label === "string" &&
+      typeof share.amount === "string" &&
+      (share.method === null || share.method === "CASH" || share.method === "ONLINE"),
+  );
+}
+
+const receiptText = (value: string) => value.length > MAX_TEXT_LENGTH ? `${value.slice(0, MAX_TEXT_LENGTH - 1)}…` : value;
+
+export function buildTableReceiptPrintDoc(receipt: unknown): PrintDoc {
+  if (!isTableReceiptSnapshot(receipt)) {
+    throw new Error("Stored table receipt snapshot is invalid");
+  }
+  const blocks: PrintDoc["blocks"] = [
+    { t: "text", text: "Zoryx", align: "center", bold: true, size: 3 },
+    ...(receipt.isDemo ? [{ t: "text" as const, text: "DEMO", align: "center" as const, bold: true }] : []),
+    ...(receipt.shop.phone ? [{ t: "text" as const, text: receiptText(`Tel: ${receipt.shop.phone}`), align: "center" as const }] : []),
+    ...(receipt.shop.addressEn ? [{ t: "text" as const, text: receiptText(receipt.shop.addressEn), align: "center" as const }] : []),
+    { t: "rule" as const, style: "double" as const },
+    { t: "text" as const, text: receiptText(receipt.table.area ? `${receipt.table.name} — ${receipt.table.area}` : receipt.table.name), align: "center" as const, bold: true },
+    { t: "text" as const, text: new Date(receipt.issuedAt).toLocaleString(), align: "center" as const },
+    { t: "rule" as const },
+  ];
+  for (const order of receipt.orders) {
+    blocks.push({ t: "text", text: receiptText(`#${order.orderNumber}${order.guestName ? ` · ${order.guestName}` : ""}`), bold: true });
+    for (const line of order.lines) {
+      const label = `${line.quantity}x ${line.name}${line.size ? ` (${line.size})` : ""}${line.addOns.length ? ` ${line.addOns.map((name) => `+${name}`).join(" ")}` : ""}`;
+      blocks.push({ t: "row", left: receiptText(label), right: receiptText(line.lineTotal) });
+    }
+  }
+  blocks.push({ t: "rule" }, { t: "row", left: "Subtotal", right: receiptText(receipt.subtotal) });
+  if (Number(receipt.discount) > 0) blocks.push({ t: "row", left: "Discount", right: `-${receiptText(receipt.discount)}` });
+  blocks.push({ t: "rule", style: "double" }, { t: "row", left: "TOTAL", right: receiptText(receipt.total), bold: true }, { t: "rule", style: "double" });
+  for (const share of receipt.shares) {
+    blocks.push({ t: "row", left: receiptText(`${share.label}${share.method ? ` (${share.method === "CASH" ? "Cash" : "Online"})` : ""}`), right: receiptText(share.amount) });
+  }
+  blocks.push({ t: "text", text: "Payment Confirmed", align: "center", bold: true }, { t: "cut" });
+  return { blocks };
+}
+
 const BLOCK_TYPES = ["text", "row", "rule", "feed", "cut", "drawer"] as const;
 
 function isValidText(value: unknown): value is string {

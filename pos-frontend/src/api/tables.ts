@@ -118,6 +118,54 @@ export interface TableSessionGuest {
   revoked: boolean;
 }
 
+// The table bill (phase 2, spec §3.5/§3.6/§7). REQUESTED locks the table's ordering; PAID once every
+// share of the current split is verified; UNLOCKED when staff let the table order again.
+export type TableBillStatus = "REQUESTED" | "UNLOCKED" | "PAID";
+export type TableShareStatus = "UNPAID" | "PROOF_SUBMITTED" | "VERIFIED" | "REJECTED" | "VOID";
+export type SplitMode = "EQUAL" | "BY_ITEMS" | "CUSTOM";
+
+export interface TableBillShare {
+  id: string;
+  position: number;
+  // A guest's name (By items), or "Share 2 of 4" (Equal / Custom).
+  label: string;
+  guestId: string | null;
+  amount: string;
+  status: TableShareStatus;
+  method: "CASH" | "ONLINE" | null;
+  // The guest tapped "Pay cash": a waiter is on the way to collect it.
+  cashRequested: boolean;
+  rejectedReason: string | null;
+  hasProof: boolean;
+  // The proof image's id; a new upload replaces it.
+  proofMediaId: string | null;
+  // Cash handed over, and the change due from it (both null unless recorded).
+  paidAmount: string | null;
+  change: string | null;
+  verifiedAt: string | null;
+}
+
+export interface TableBill {
+  id: string;
+  // Sent back as expectedVersion on every bill write; a stale one answers 409 BILL_CHANGED.
+  version: number;
+  status: TableBillStatus;
+  requestedAt: string;
+  subtotal: string;
+  discount: string;
+  total: string;
+  discountReason: string | null;
+  splitMode: SplitMode | null;
+  splitVersion: number;
+  // Why the split/discount/payments are refused right now; null when nothing blocks them.
+  blockedReason: "ORDERS_AWAITING" | "SPLIT_HAS_PAYMENTS" | null;
+  // The split was cancelled by a change to the bill (items added, discount changed): split again.
+  needsSplit: boolean;
+  paidAt: string | null;
+  // The current split's shares only (void and older ones are history).
+  shares: TableBillShare[];
+}
+
 export interface TableSessionDetail {
   session: {
     id: string;
@@ -133,7 +181,40 @@ export interface TableSessionDetail {
   table: { id: string; name: string; area: string | null; capacity: number | null };
   guests: TableSessionGuest[];
   orders: TableSessionOrder[];
+  // null until someone asks for the bill.
+  bill: TableBill | null;
 }
+
+// The receipt snapshot (spec §7.6): made once when the bill is paid (or at close for a table paid
+// order by order), never recomputed. No staff names, phones, proofs or discount reasons.
+export interface TableReceiptSnapshot {
+  shop: { nameEn: string | null; nameUr: string | null; addressEn: string | null; phone: string | null };
+  table: { name: string; area: string | null };
+  seatedAt: string;
+  issuedAt: string;
+  businessDayLabel: string | null;
+  orders: {
+    orderNumber: number;
+    guestName: string | null;
+    lines: { name: string; nameUr: string | null; size: string | null; addOns: string[]; quantity: number; lineTotal: string }[];
+  }[];
+  subtotal: string;
+  discount: string;
+  total: string;
+  shares: { label: string; amount: string; method: "CASH" | "ONLINE" | null }[];
+  isDemo: boolean;
+}
+
+export interface TableReceipt {
+  // The long public link's key: /r/<receiptKey> on the customer website.
+  receiptKey: string;
+  receipt: TableReceiptSnapshot;
+}
+
+export type SplitInput =
+  | { mode: "EQUAL"; parts: number }
+  | { mode: "BY_ITEMS" }
+  | { mode: "CUSTOM"; shares: { amount: string; guestId?: string }[] };
 
 // A waiter call as staff screens get it (GET /table-calls, oldest first).
 export interface StaffTableCall {
@@ -184,8 +265,74 @@ export async function rotateTablePin(sessionId: string): Promise<{ pin: string }
   return data;
 }
 
-export async function closeTableSession(sessionId: string): Promise<unknown> {
-  const { data } = await apiClient.post(`/api/pos/table-sessions/${sessionId}/close`);
+export async function closeTableSession(sessionId: string): Promise<{ receiptKey: string | null }> {
+  const { data } = await apiClient.post<{ receiptKey: string | null }>(`/api/pos/table-sessions/${sessionId}/close`);
+  return data;
+}
+
+// ---- The table bill (staff). Every write answers { bill }, the bill as it now stands. ----
+
+const billPath = (sessionId: string) => `/api/pos/table-sessions/${sessionId}/bill`;
+const sharePath = (sessionId: string, shareId: string) => `${billPath(sessionId)}/shares/${shareId}`;
+
+export async function requestTableBill(sessionId: string): Promise<{ bill: TableBill }> {
+  const { data } = await apiClient.post<{ bill: TableBill }>(billPath(sessionId), {});
+  return data;
+}
+
+export async function unlockTableBill(sessionId: string, expectedVersion: number): Promise<{ bill: TableBill }> {
+  const { data } = await apiClient.post<{ bill: TableBill }>(`${billPath(sessionId)}/unlock`, { expectedVersion });
+  return data;
+}
+
+export async function setTableBillDiscount(
+  sessionId: string,
+  input: { discount: string; discountReason?: string; expectedVersion: number },
+): Promise<{ bill: TableBill }> {
+  const { data } = await apiClient.put<{ bill: TableBill }>(`${billPath(sessionId)}/discount`, input);
+  return data;
+}
+
+export async function setTableBillSplit(sessionId: string, input: SplitInput & { expectedVersion: number }): Promise<{ bill: TableBill }> {
+  const { data } = await apiClient.put<{ bill: TableBill }>(`${billPath(sessionId)}/split`, input);
+  return data;
+}
+
+// Cash collected at the table. paidAmount (what was handed over, ≥ the share) is optional.
+export async function markTableSharePaid(sessionId: string, shareId: string, paidAmount: string | null): Promise<{ bill: TableBill }> {
+  const { data } = await apiClient.post<{ bill: TableBill }>(`${sharePath(sessionId, shareId)}/mark-paid`, paidAmount ? { paidAmount } : {});
+  return data;
+}
+
+export async function verifyTableShare(sessionId: string, shareId: string): Promise<{ bill: TableBill }> {
+  const { data } = await apiClient.post<{ bill: TableBill }>(`${sharePath(sessionId, shareId)}/verify`, {});
+  return data;
+}
+
+export async function rejectTableShare(sessionId: string, shareId: string, reason: string): Promise<{ bill: TableBill }> {
+  const { data } = await apiClient.post<{ bill: TableBill }>(`${sharePath(sessionId, shareId)}/reject`, { reason });
+  return data;
+}
+
+export async function unmarkTableShare(sessionId: string, shareId: string, reason: string): Promise<{ bill: TableBill }> {
+  const { data } = await apiClient.post<{ bill: TableBill }>(`${sharePath(sessionId, shareId)}/unmark`, { reason });
+  return data;
+}
+
+// The guest's proof image. Staff-only, so fetched as a blob (see useProofImageUrl).
+export async function fetchTableShareProof(sessionId: string, shareId: string, size: "thumb" | "full"): Promise<Blob> {
+  const { data } = await apiClient.get<Blob>(`${sharePath(sessionId, shareId)}/payment-proof`, { params: { size }, responseType: "blob" });
+  return data;
+}
+
+// 404 NOT_READY until the bill is paid (or the table closed with something paid).
+export async function fetchTableReceipt(sessionId: string): Promise<TableReceipt> {
+  const { data } = await apiClient.get<TableReceipt>(`/api/pos/table-sessions/${sessionId}/receipt`);
+  return data;
+}
+
+export async function printTableReceipt(sessionId: string, printerId?: string): Promise<{ printed: number }> {
+  const { data } = await apiClient.post<{ printed: number }>(`/api/pos/table-sessions/${sessionId}/receipt/print`, printerId ? { printerId } : {});
   return data;
 }
 

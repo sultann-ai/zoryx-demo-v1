@@ -24,17 +24,19 @@ tableSessionRouter.post("/:id/pin/rotate", requireAuth, requireRole(...FLOOR_ROL
 tableSessionRouter.post("/:id/guests/:guestId/remove", requireAuth, requireRole(...FLOOR_ROLES), controller.removeGuest);
 tableSessionRouter.post("/:id/close", requireAuth, requireRole(...FLOOR_ROLES), controller.closeSession);
 tableSessionRouter.post("/:id/void", requireAuth, requireRole(...ADMIN_ROLES), controller.voidSession);
-// The table bill (phase 2): requesting it is a floor action; discount, split and taking payment are admin-only.
+// The table bill (phase 2): requesting it is a floor action; discount, split and checking proofs are
+// admin-only. Cash collected is also open to an ORDER_TAKER, for a table that is theirs (the service checks).
 tableSessionRouter.post("/:id/bill", requireAuth, requireRole(...FLOOR_ROLES), bill.requestBill);
 tableSessionRouter.post("/:id/bill/unlock", requireAuth, requireRole(...ADMIN_ROLES), bill.unlockBill);
 tableSessionRouter.put("/:id/bill/discount", requireAuth, requireRole(...ADMIN_ROLES), bill.setDiscount);
 tableSessionRouter.put("/:id/bill/split", requireAuth, requireRole(...ADMIN_ROLES), bill.setSplit);
-tableSessionRouter.post("/:id/bill/shares/:shareId/mark-paid", requireAuth, requireRole(...ADMIN_ROLES), bill.markSharePaid);
+tableSessionRouter.post("/:id/bill/shares/:shareId/mark-paid", requireAuth, requireRole(...FLOOR_ROLES), bill.markSharePaid);
 tableSessionRouter.post("/:id/bill/shares/:shareId/verify", requireAuth, requireRole(...ADMIN_ROLES), bill.verifyShare);
 tableSessionRouter.post("/:id/bill/shares/:shareId/reject", requireAuth, requireRole(...ADMIN_ROLES), bill.rejectShare);
 tableSessionRouter.post("/:id/bill/shares/:shareId/unmark", requireAuth, requireRole(...ADMIN_ROLES), bill.unmarkShare);
 tableSessionRouter.get("/:id/bill/shares/:shareId/payment-proof", requireAuth, requireRole(...ADMIN_ROLES), bill.getShareProof);
 tableSessionRouter.get("/:id/receipt", requireAuth, requireRole(...FLOOR_ROLES), bill.getReceipt);
+tableSessionRouter.post("/:id/receipt/print", requireAuth, requireRole(...FLOOR_ROLES), bill.printReceipt);
 
 // /api/pos/table-calls — waiter calls (build step 3): whoever works the floor sees and answers them.
 export const tableCallRouter = Router();

@@ -1,21 +1,26 @@
 import { useState } from "react";
+import { ordersApi } from "../api/orders";
+import type { ProofFetcher } from "../hooks/useProofImageUrl";
 import { useProofImageUrl } from "../hooks/useProofImageUrl";
 import { Modal } from "./ui";
 
-interface PaymentProofProps {
-  orderId: string;
-  // A guest's proof, stored in Postgres (served to staff only).
+interface ProofImageProps {
+  // What the proof belongs to (an order id, a table bill share id): part of the image cache key.
+  ownerKey: string;
+  // A guest's proof, stored in Postgres (served to staff only). Any value that changes when the
+  // guest uploads a new one; null = there is no stored proof.
   proofMediaId: string | null;
+  fetchProof: ProofFetcher;
   // Orders placed before proofs moved off local disk keep a path under /uploads.
-  legacyScreenshotUrl: string | null;
+  legacyScreenshotUrl?: string | null;
 }
 
-// The payment screenshot on an order: a small thumbnail that opens full size. Renders nothing when
-// there is no proof at all.
-export function PaymentProof({ orderId, proofMediaId, legacyScreenshotUrl }: PaymentProofProps) {
+// A guest's payment screenshot: a small thumbnail that opens full size. Renders nothing when there is
+// no proof at all. Used for online orders (Incoming, Order Detail) and for table bill shares.
+export function ProofImage({ ownerKey, proofMediaId, fetchProof, legacyScreenshotUrl = null }: ProofImageProps) {
   const [isOpen, setIsOpen] = useState(false);
-  const thumb = useProofImageUrl(orderId, proofMediaId, "thumb");
-  const full = useProofImageUrl(orderId, proofMediaId, "full", isOpen);
+  const thumb = useProofImageUrl(ownerKey, proofMediaId, fetchProof, "thumb");
+  const full = useProofImageUrl(ownerKey, proofMediaId, fetchProof, "full", isOpen);
 
   const legacyUrl = legacyScreenshotUrl ? `${import.meta.env.VITE_API_URL}${legacyScreenshotUrl}` : null;
   const thumbUrl = proofMediaId !== null ? thumb.url : legacyUrl;
@@ -45,5 +50,23 @@ export function PaymentProof({ orderId, proofMediaId, legacyScreenshotUrl }: Pay
         )}
       </Modal>
     </>
+  );
+}
+
+interface PaymentProofProps {
+  orderId: string;
+  proofMediaId: string | null;
+  legacyScreenshotUrl: string | null;
+}
+
+// An order's payment screenshot.
+export function PaymentProof({ orderId, proofMediaId, legacyScreenshotUrl }: PaymentProofProps) {
+  return (
+    <ProofImage
+      ownerKey={`order:${orderId}`}
+      proofMediaId={proofMediaId}
+      fetchProof={(size) => ordersApi.getPaymentProof(orderId, size)}
+      legacyScreenshotUrl={legacyScreenshotUrl}
+    />
   );
 }

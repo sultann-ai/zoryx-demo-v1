@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { sendPaymentProof } from "../media/sendPaymentProof";
+import { buildTableReceiptPrintDoc, dispatchPrintJob } from "../print/print.service";
 import * as billService from "./tableBill.service";
 import * as validators from "./tableBill.validators";
 import { TableStaffError } from "./tableErrors";
@@ -81,10 +82,34 @@ export async function getShareProof(req: Request, res: Response) {
 
 // GET /:id/receipt — the closed table's receipt and its link.
 export async function getReceipt(req: Request, res: Response) {
-  const receipt = await billService.getSessionReceipt(sessionId(req));
+  const receipt = await billService.getSessionReceipt(sessionId(req), staffActor(req));
   if (!receipt) {
     res.status(404).json({ error: "This table has no receipt yet", code: "NOT_READY" });
     return;
   }
   res.json(receipt);
+}
+
+// POST /:id/receipt/print — the server chooses the receipt document; ORDER_TAKER is scoped to its table.
+export async function printReceipt(req: Request, res: Response) {
+  await run(res, async () => {
+    const body = req.body;
+    if (typeof body !== "object" || body === null || Object.keys(body).some((key) => key !== "printerId")) {
+      throw new validators.BillValidationError("Only printerId may be sent");
+    }
+    const printerId = (body as { printerId?: unknown }).printerId;
+    if (printerId !== undefined && (typeof printerId !== "string" || printerId.trim() === "")) {
+      throw new validators.BillValidationError("printerId must be a non-empty string");
+    }
+    const receipt = await billService.getSessionReceipt(sessionId(req), staffActor(req));
+    if (!receipt) {
+      throw new TableStaffError(404, "NOT_READY", "This table has no receipt yet");
+    }
+    const result = await dispatchPrintJob(printerId ?? "main", [buildTableReceiptPrintDoc(receipt.receipt)]);
+    if (result.failure) {
+      const status = result.failure.status === "offline" ? 503 : result.failure.status === "timeout" ? 504 : 502;
+      throw new TableStaffError(status, "PRINT_FAILED", result.failure.message);
+    }
+    return { printed: result.printed };
+  });
 }

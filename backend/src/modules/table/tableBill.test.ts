@@ -313,6 +313,31 @@ describe.skipIf(!isLocalDb)("table bill (local DB, rolled back)", () => {
     expect(sharedFakeIO.emits.some((emit) => emit.event === "table-bill:updated" && (emit.payload as { status: string }).status === "PAID")).toBe(true);
   });
 
+  it("an order taker takes cash only at a table that is theirs", async () => {
+    const r = await withRollback(async (tx) => {
+      const world = await seedTableWorld(tx);
+      // seat() seats as world.waiter (an ORDER_TAKER), who becomes the session's waiter.
+      const { sessionId, guests } = await seat(world, ["Ali", "Sara"]);
+      const [ali, sara] = guests;
+      await orderAndAccept(world, ali!, [{ menuItemId: world.burger.id, quantity: 1 }]);
+      await orderAndAccept(world, sara!, [{ menuItemId: world.burger.id, quantity: 1 }]);
+      const requested = await billService.requestBill(sessionId, ali!.actor);
+      const split = await billService.setSplit(sessionId, ali!.actor, { mode: SplitMode.BY_ITEMS, expectedVersion: requested.bill!.version });
+      const [first, second] = split.bill!.shares;
+      const other = await tx.staffUser.create({ data: { name: "Other Taker", username: `other-${uuid()}`, passwordHash: "x", role: StaffRole.ORDER_TAKER } });
+      const notTheirs = await caught(billService.markSharePaid(sessionId, { kind: "staff", id: other.id, role: StaffRole.ORDER_TAKER }, first!.id, null));
+      const theirs = await billService.markSharePaid(sessionId, { kind: "staff", id: world.waiter.id, role: StaffRole.ORDER_TAKER }, first!.id, D(600));
+      // Not even a replay of a paid share answers a stranger with 200.
+      const replayByOther = await caught(billService.markSharePaid(sessionId, { kind: "staff", id: other.id, role: StaffRole.ORDER_TAKER }, first!.id, null));
+      const admin = await billService.markSharePaid(sessionId, staff(world), second!.id, null);
+      return { notTheirs, theirs, replayByOther, admin };
+    });
+    expect(r.notTheirs).toMatchObject({ status: 403, code: "NOT_YOUR_TABLE" });
+    expect(r.theirs.bill!.shares[0]).toMatchObject({ status: "VERIFIED", method: "CASH", paidAmount: "600.00", change: "100.00" });
+    expect(r.replayByOther).toMatchObject({ status: 403, code: "NOT_YOUR_TABLE" });
+    expect(r.admin.bill!.status).toBe("PAID");
+  });
+
   it("locks the table, guards one-by-one payment, waits for reception, and repeats are harmless", async () => {
     const r = await withRollback(async (tx) => {
       const world = await seedTableWorld(tx);

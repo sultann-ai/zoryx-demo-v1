@@ -11,6 +11,7 @@ import { NewOrderPage } from "./pages/NewOrderPage";
 import { OrderDetailPage } from "./pages/OrderDetailPage";
 import { PrintKitchenTicketsPage } from "./pages/PrintKitchenTicketsPage";
 import { PrintReceiptPage } from "./pages/PrintReceiptPage";
+import { PrintTableReceiptPage } from "./pages/PrintTableReceiptPage";
 import { QrSheetPage } from "./pages/QrSheetPage";
 import { TablesPage } from "./pages/TablesPage";
 import { TakerCallsPage } from "./pages/TakerCallsPage";
@@ -73,6 +74,15 @@ function AppRoutes() {
         element={
           <ProtectedRoute allowedRoles={ORDERS_STAFF_ROLES}>
             <PrintReceiptPage />
+          </ProtectedRoute>
+        }
+      />
+      {/* A table's receipt (browser fallback for the print agent): whoever works the floor. */}
+      <Route
+        path="/table-sessions/:id/print/receipt"
+        element={
+          <ProtectedRoute allowedRoles={["SUPER_ADMIN", "POS_ADMIN", "ORDER_TAKER"]}>
+            <PrintTableReceiptPage />
           </ProtectedRoute>
         }
       />
