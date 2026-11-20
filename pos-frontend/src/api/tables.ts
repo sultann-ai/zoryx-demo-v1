@@ -1,6 +1,6 @@
 import { apiClient } from "./client";
 import type { DiningAreaType } from "./diningAreas";
-import type { OrderItemStatus, OrderStatus } from "./orders";
+import type { OrderItemStatus, OrderSource, OrderStatus, PaymentStatus } from "./orders";
 
 // Table QR, staff side (docs/TABLE_QR_SPEC.md §4.2): the floor map, the layout editor and a table's
 // session. Money fields are strings, as everywhere else.
@@ -8,6 +8,8 @@ import type { OrderItemStatus, OrderStatus } from "./orders";
 // §3.7 — derived on the server, first matching row wins. The POS never computes it.
 export type TableState =
   | "UNAVAILABLE"
+  // Table sync: still open from a business day that has ended — settle or close it before reuse.
+  | "PREVIOUS_DAY"
   | "EMPTY"
   | "PAYING"
   | "BILL_REQUESTED"
@@ -51,7 +53,19 @@ export interface FloorSession {
   openCalls: FloorCall[];
   // Phase 2 (table bill); always null until then.
   bill: { status: string; paid: number; of: number } | null;
+  // Table sync (docs/TABLE_SYNC_SPEC.md): how the session was opened, what's on it so far, and merges.
+  openedVia?: TableSessionOpenedVia;
+  openedByOrderId?: string | null;
+  orderCount?: number;
+  total?: string;
+  fromPreviousDay?: boolean;
+  // This table is merged into another table's session (the tile reads "with <name>").
+  joinedTo?: { tableId: string; name: string } | null;
+  // Tables merged into this one's session.
+  joined?: { tableId: string; name: string }[];
 }
+
+export type TableSessionOpenedVia = "SEAT" | "STAFF_ORDER" | "SCHEDULED_ORDER" | "SPLIT_OFF" | "MIGRATION";
 
 export interface FloorTable {
   id: string;
@@ -63,6 +77,8 @@ export interface FloorTable {
   // null = not placed on the map yet.
   layout: TableLayout | null;
   outOfService: boolean;
+  // A switched-off table that still has an open session (from before that was refused).
+  inactive?: boolean;
   state: TableState;
   attention: TableAttention;
   readyCount: number;
@@ -95,6 +111,10 @@ export interface TableSessionOrder {
   id: string;
   orderNumber: number;
   status: OrderStatus;
+  // Where it came from: the POS counter, a waiter (ORDER_TAKER) or a guest's phone (TABLE_QR).
+  source: OrderSource;
+  paymentStatus: PaymentStatus;
+  diningAreaId: string | null;
   totalAmount: string;
   createdAt: string;
   scheduledFor: string | null;
@@ -177,6 +197,9 @@ export interface TableSessionDetail {
     closedAt: string | null;
     waiterStaff: { id: string; name: string } | null;
     seatedBy: { id: string; name: string } | null;
+    openedVia?: TableSessionOpenedVia;
+    openedByOrderId?: string | null;
+    mergedIntoSessionId?: string | null;
   };
   table: { id: string; name: string; area: string | null; capacity: number | null };
   guests: TableSessionGuest[];
@@ -333,6 +356,72 @@ export async function fetchTableReceipt(sessionId: string): Promise<TableReceipt
 
 export async function printTableReceipt(sessionId: string, printerId?: string): Promise<{ printed: number }> {
   const { data } = await apiClient.post<{ printed: number }>(`/api/pos/table-sessions/${sessionId}/receipt/print`, printerId ? { printerId } : {});
+  return data;
+}
+
+// ---- Table sync (docs/TABLE_SYNC_SPEC.md R4, R7, R13) ----
+
+// What every table conflict (409) carries about the table's open session.
+export interface TableSessionSummary {
+  id: string;
+  tableName: string;
+  openedAt: string;
+  openedVia: TableSessionOpenedVia;
+  orderCount: number;
+  total: string;
+  guestCount: number;
+  fromPreviousDay: boolean;
+}
+
+// A table an order just opened: its session, and the join PIN when the PIN setting is on (shown once).
+export interface TableOpened {
+  sessionId: string;
+  pin: string | null;
+}
+
+export async function moveOrderToTable(
+  orderId: string,
+  input: { diningAreaId: string; expectedTableSessionId: string | null },
+): Promise<{ orderId: string; diningAreaId: string; tableSessionId: string | null; tableOpened: TableOpened | null }> {
+  const { data } = await apiClient.post(`/api/pos/orders/${orderId}/move-table`, input);
+  return data;
+}
+
+export async function moveTableSession(sessionId: string, diningAreaId: string): Promise<{ sessionId: string; diningAreaId: string; movedOrders: number }> {
+  const { data } = await apiClient.post(`/api/pos/table-sessions/${sessionId}/move`, { diningAreaId });
+  return data;
+}
+
+export async function mergeTableSession(sessionId: string, intoSessionId: string): Promise<{ sessionId: string; mergedSessionId: string }> {
+  const { data } = await apiClient.post(`/api/pos/table-sessions/${sessionId}/merge`, { intoSessionId });
+  return data;
+}
+
+export interface SettleTableInput {
+  method: "CASH" | "ONLINE";
+  paidAmount?: string;
+  discount?: string;
+  discountReason?: string;
+}
+
+// Pays the whole table at the counter and closes it (one share, "Paid at the counter").
+export async function settleTableSession(
+  sessionId: string,
+  input: SettleTableInput,
+): Promise<{ session: { id: string; status: string }; receiptKey: string | null; change: string | null }> {
+  const { data } = await apiClient.post(`/api/pos/table-sessions/${sessionId}/settle`, input);
+  return data;
+}
+
+// SA/PA: closes a table that never had an accepted order (seated by mistake, guests left).
+export async function voidTableSession(sessionId: string, reason: string): Promise<{ session: { id: string; status: string } }> {
+  const { data } = await apiClient.post(`/api/pos/table-sessions/${sessionId}/void`, { reason });
+  return data;
+}
+
+// The running bill on the receipt printer ("BILL - NOT A RECEIPT"), built on the server.
+export async function printTableBill(sessionId: string, printerId?: string): Promise<{ printed: number }> {
+  const { data } = await apiClient.post<{ printed: number }>(`/api/pos/table-sessions/${sessionId}/bill/print`, printerId ? { printerId } : {});
   return data;
 }
 

@@ -15,6 +15,8 @@ function order(over: Record<string, unknown> = {}): SourcePublicOrder {
     paymentMethod: PaymentMethod.CASH,
     paymentStatus: PaymentStatus.PENDING,
     paymentProofMediaId: null,
+    paymentProofAt: null,
+    paymentRejectedReason: null,
     cancelledReason: null,
     discount: "0",
     deliveryFee: "150",
@@ -152,10 +154,24 @@ describe("toPublicOrderStatus — content", () => {
   it("derives the status and payment state", () => {
     expect(toPublicOrderStatus(order({ status: OrderStatus.AWAITING_RECEPTION })).status).toBe("RECEIVED");
     expect(toPublicOrderStatus(order({ status: OrderStatus.COMPLETED })).status).toBe("DELIVERED");
-    expect(toPublicOrderStatus(order()).payment).toEqual({ method: "CASH", state: "NOT_REQUIRED" });
+    expect(toPublicOrderStatus(order()).payment).toEqual({ method: "CASH", state: "NOT_REQUIRED", proofSentAt: null, rejectReason: null });
     expect(
       toPublicOrderStatus(order({ paymentMethod: PaymentMethod.ONLINE, paymentStatus: PaymentStatus.AWAITING_VERIFICATION, paymentProofMediaId: "m" })).payment,
-    ).toEqual({ method: "ONLINE", state: "PROOF_RECEIVED" });
+    ).toEqual({ method: "ONLINE", state: "PROOF_RECEIVED", proofSentAt: null, rejectReason: null });
+  });
+
+  it("tells the status page when the proof arrived, and why a payment was turned down", () => {
+    const online = { paymentMethod: PaymentMethod.ONLINE, paymentProofMediaId: "m", paymentProofAt: new Date("2026-11-10T10:05:00Z") };
+    const waiting = toPublicOrderStatus(order({ ...online, paymentStatus: PaymentStatus.AWAITING_VERIFICATION })).payment;
+    expect(waiting).toEqual({ method: "ONLINE", state: "PROOF_RECEIVED", proofSentAt: "2026-11-10T10:05:00.000Z", rejectReason: null });
+    const rejected = toPublicOrderStatus(
+      order({ ...online, paymentStatus: PaymentStatus.REJECTED, paymentRejectedReason: "Amount does not match" }),
+    ).payment;
+    expect(rejected).toEqual({ method: "ONLINE", state: "PAYMENT_PROBLEM", proofSentAt: "2026-11-10T10:05:00.000Z", rejectReason: "Amount does not match" });
+    // A stale reason never shows once the payment is back in the queue or confirmed; no proof means no time.
+    expect(toPublicOrderStatus(order({ ...online, paymentStatus: PaymentStatus.VERIFIED, paymentRejectedReason: "old" })).payment.rejectReason).toBeNull();
+    expect(toPublicOrderStatus(order({ ...online, paymentStatus: PaymentStatus.AWAITING_VERIFICATION, paymentRejectedReason: "old" })).payment.rejectReason).toBeNull();
+    expect(toPublicOrderStatus(order({ ...online, paymentProofMediaId: null, paymentStatus: PaymentStatus.AWAITING_VERIFICATION })).payment.proofSentAt).toBeNull();
   });
 
   it("shows the staff reason for a CANCELLED order", () => {

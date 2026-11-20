@@ -1,5 +1,6 @@
 import { createContext, useContext } from 'react'
 import { isSessionEnded, type TableInfo, type TableSessionPoll } from '../../api/table'
+import { ApiError } from '../../api/client'
 
 /** A joined guest's table: the QR key, their token, the latest poll, and the way out when the session ends. */
 export interface TableValue {
@@ -7,7 +8,7 @@ export interface TableValue {
   token: string
   poll: TableSessionPoll
   /** Drop the token and show "your table is closed" (a 401 from any table call). */
-  endSession: () => void
+  endSession: (receiptKey?: string) => void
   /** Ask for a fresh poll now (after anything the guest did). */
   refresh: () => void
 }
@@ -23,7 +24,10 @@ export function useTable(): TableValue {
 /** Every table call's error goes through here first: a 401 ends the session, and then there is nothing else to say. */
 export function endsSession(error: unknown, table: Pick<TableValue, 'endSession'>): boolean {
   if (!isSessionEnded(error)) return false
-  table.endSession()
+  const receiptKey = error instanceof ApiError && typeof error.details.receiptKey === 'string'
+    ? error.details.receiptKey
+    : undefined
+  table.endSession(receiptKey)
   return true
 }
 

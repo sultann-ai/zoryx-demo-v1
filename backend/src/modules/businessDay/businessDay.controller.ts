@@ -98,6 +98,10 @@ export async function end(req: Request, res: Response) {
     }
   }
 
-  const businessDay = await businessDayService.endBusinessDay(active.id, req.staff.id);
+  // Forced: tables that owe nothing close with the day; the rest are listed and stay open (table sync R6).
+  const businessDay =
+    force === true
+      ? await businessDayService.endBusinessDayForced(active.id, req.staff.id)
+      : await businessDayService.endBusinessDay(active.id, req.staff.id);
   res.json(businessDay);
 }

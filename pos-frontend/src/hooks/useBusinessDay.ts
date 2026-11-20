@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { endBusinessDay, fetchCurrentBusinessDay, startBusinessDay } from "../api/businessDay";
+import { FLOOR_QUERY_KEY } from "./useTables";
 
 export const businessDayQueryKey = ["business-day", "current"] as const;
 
@@ -27,6 +28,8 @@ export function useEndBusinessDay() {
     mutationFn: (force?: boolean) => endBusinessDay(force),
     onSuccess: (businessDay) => {
       queryClient.setQueryData(businessDayQueryKey, businessDay);
+      // Tables may have closed with the day, or now read "From yesterday".
+      queryClient.invalidateQueries({ queryKey: FLOOR_QUERY_KEY });
     },
   });
 }

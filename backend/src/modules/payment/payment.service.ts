@@ -49,12 +49,13 @@ export async function verifyPayment(orderId: string, paymentVerifiedById: string
   });
 }
 
-export async function rejectPayment(orderId: string) {
+// `reason` (optional, <= 200 chars) is what the customer's status page shows next to "upload a new screenshot".
+export async function rejectPayment(orderId: string, reason?: string) {
   await requireAwaitingVerification(orderId);
 
   return prisma.order.update({
     where: { id: orderId },
-    data: { paymentStatus: PaymentStatus.REJECTED },
+    data: { paymentStatus: PaymentStatus.REJECTED, paymentRejectedReason: reason ?? null },
   });
 }
 

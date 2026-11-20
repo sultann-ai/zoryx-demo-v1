@@ -135,17 +135,21 @@ export async function syncTableBillForOrder(tx: Prisma.TransactionClient, orderI
 }
 
 /**
- * Phase 2 (Conflict C5): once a table has a bill being paid, its orders are paid and completed through
- * that bill only — the one-by-one payment-status / complete / delivered actions answer 409 USE_TABLE_BILL.
+ * Table sync R4 (replaces phase 2's "once a bill is requested"): an order at a table is paid and completed
+ * through the table's bill only — from its first order — so the one-by-one payment-status / complete /
+ * delivered actions answer 409 USE_TABLE_BILL. Call inside the transaction, after lockTableForOrder, so a
+ * payment and a bill request can't both win.
  */
-export async function assertNotPaidThroughTableBill(db: Db, orderId: string): Promise<void> {
+export async function assertNotOnTableBill(db: Db, orderId: string): Promise<void> {
   const order = await db.order.findUnique({
     where: { id: orderId },
-    select: { tableSession: { select: { bill: { select: { status: true } } } } },
+    select: { tableSessionId: true, tableSession: { select: { diningArea: { select: { name: true } } } } },
   });
-  const status = order?.tableSession?.bill?.status;
-  if (status === TableBillStatus.REQUESTED || status === TableBillStatus.PAID) {
-    throw new TableStaffError(409, "USE_TABLE_BILL", "This order is paid through its table's bill. Open the table to take payment.");
+  if (order?.tableSessionId) {
+    const table = order.tableSession?.diningArea.name ?? "its table";
+    throw new TableStaffError(409, "USE_TABLE_BILL", `This order is paid through ${table}'s bill. Open the table to take payment.`, {
+      sessionId: order.tableSessionId,
+    });
   }
 }
 

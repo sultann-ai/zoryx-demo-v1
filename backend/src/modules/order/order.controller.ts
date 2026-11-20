@@ -46,6 +46,26 @@ function isOneOf<T extends string>(value: unknown, options: readonly T[]): value
   return typeof value === "string" && (options as readonly string[]).includes(value);
 }
 
+// Table sync R2: a dine-in order says what its sender saw at the table — null ("the table is free") or the
+// open session's id ("add to it"). The key must be there: a screen that doesn't send it is out of date.
+type TableExpectation = { ok: true; value: string | null } | { ok: false };
+
+function readTableExpectation(body: Record<string, unknown>, res: Response): TableExpectation {
+  if (!("expectedTableSessionId" in body)) {
+    res.status(400).json({
+      code: "TABLE_EXPECTATION_REQUIRED",
+      error: "Pick the table again — this screen is out of date. Reload the page.",
+    });
+    return { ok: false };
+  }
+  const value = body.expectedTableSessionId;
+  if (value !== null && (typeof value !== "string" || value.length === 0)) {
+    res.status(400).json({ error: "expectedTableSessionId must be a session id or null" });
+    return { ok: false };
+  }
+  return { ok: true, value: value as string | null };
+}
+
 function parseDecimal(value: unknown): Prisma.Decimal | undefined {
   if (typeof value !== "string" && typeof value !== "number") {
     return undefined;
@@ -121,9 +141,18 @@ export async function createOrder(req: Request, res: Response) {
     res.status(400).json({ error: "diningAreaId is required for DINE_IN orders" });
     return;
   }
-  if (type === OrderType.TAKEAWAY && diningAreaId !== undefined) {
-    res.status(400).json({ error: "diningAreaId must not be provided for TAKEAWAY orders" });
+  if (type !== OrderType.DINE_IN && diningAreaId !== undefined) {
+    res.status(400).json({ code: "TABLE_NOT_ALLOWED", error: "Only dine-in orders can have a table." });
     return;
+  }
+  // A dine-in order placed now joins or opens its table's session (a scheduled one takes it at release).
+  let expectedTableSessionId: string | null | undefined;
+  if (type === OrderType.DINE_IN && scheduledFor === undefined) {
+    const expectation = readTableExpectation(req.body ?? {}, res);
+    if (!expectation.ok) {
+      return;
+    }
+    expectedTableSessionId = expectation.value;
   }
   if (type === OrderType.TAKEAWAY && (customerAddressId !== undefined || deliveryAddress !== undefined)) {
     res.status(400).json({ error: "TAKEAWAY orders must not include customerAddressId or deliveryAddress" });
@@ -197,7 +226,9 @@ export async function createOrder(req: Request, res: Response) {
       type,
       paymentMethod,
       placedByStaffId: req.staff.id,
+      placedByRole: req.staff.role,
       ...(diningAreaId !== undefined ? { diningAreaId } : {}),
+      ...(expectedTableSessionId !== undefined ? { expectedTableSessionId } : {}),
       ...(waiterId !== undefined ? { waiterId } : {}),
       ...(riderId !== undefined ? { riderId } : {}),
       ...(customerId !== undefined ? { customerId } : {}),
@@ -269,6 +300,12 @@ export async function assignOrder(req: Request, res: Response) {
 
   const { waiterId, riderId, diningAreaId } = req.body ?? {};
 
+  // Table sync R7: an order changes table only through POST /orders/:id/move-table, which moves it
+  // between table sessions and bills.
+  if (diningAreaId !== undefined) {
+    res.status(400).json({ code: "USE_MOVE_TABLE", error: "Use Move to table to change an order's table." });
+    return;
+  }
   if (waiterId !== undefined && typeof waiterId !== "string") {
     res.status(400).json({ error: "waiterId must be a string" });
     return;
@@ -277,12 +314,8 @@ export async function assignOrder(req: Request, res: Response) {
     res.status(400).json({ error: "riderId must be a string" });
     return;
   }
-  if (diningAreaId !== undefined && typeof diningAreaId !== "string") {
-    res.status(400).json({ error: "diningAreaId must be a string" });
-    return;
-  }
-  if (waiterId === undefined && riderId === undefined && diningAreaId === undefined) {
-    res.status(400).json({ error: "At least one of waiterId, riderId, or diningAreaId is required" });
+  if (waiterId === undefined && riderId === undefined) {
+    res.status(400).json({ error: "At least one of waiterId or riderId is required" });
     return;
   }
 
@@ -290,7 +323,6 @@ export async function assignOrder(req: Request, res: Response) {
     const order = await orderService.assignOrder(req.params.id as string, {
       ...(waiterId !== undefined ? { waiterId } : {}),
       ...(riderId !== undefined ? { riderId } : {}),
-      ...(diningAreaId !== undefined ? { diningAreaId } : {}),
     });
     res.json(order);
   } catch (error) {
@@ -300,10 +332,6 @@ export async function assignOrder(req: Request, res: Response) {
     }
     if (orderService.isNotFoundError(error)) {
       res.status(404).json({ error: "Order not found" });
-      return;
-    }
-    if (orderService.isForeignKeyConstraintError(error)) {
-      res.status(400).json({ error: "diningAreaId does not reference an existing DiningArea" });
       return;
     }
     throw error;
@@ -489,6 +517,10 @@ export async function submitOrder(req: Request, res: Response) {
     res.status(400).json({ error: "notes must be a string" });
     return;
   }
+  const expectation = readTableExpectation(req.body ?? {}, res);
+  if (!expectation.ok) {
+    return;
+  }
 
   let parsedItems: orderService.CreateOrderItemInput[];
   try {
@@ -521,6 +553,7 @@ export async function submitOrder(req: Request, res: Response) {
     const { order, isNew } = await orderService.submitOrderTakerOrder({
       placedByStaffId: req.staff.id,
       diningAreaId,
+      expectedTableSessionId: expectation.value,
       items: parsedItems,
       deals: parsedDeals,
       ...(notes !== undefined ? { notes } : {}),
@@ -936,6 +969,10 @@ export async function acceptOrder(req: Request, res: Response) {
     }
     if (error instanceof orderService.OrderNotAwaitingReceptionError) {
       res.status(409).json({ error: "This order has already been reviewed" });
+      return;
+    }
+    if (error instanceof orderService.InvalidReceptionActionError) {
+      res.status(400).json({ error: error.message });
       return;
     }
     if (error instanceof orderService.PaymentNotVerifiedError) {

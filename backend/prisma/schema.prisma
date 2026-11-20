@@ -101,6 +101,8 @@ enum OrderEventType {
   // The order was finished: completeOrder (POST /:id/complete), "Mark delivered", or a takeaway
   // auto-completed when it was marked paid (after.auto = true).
   COMPLETED
+  // Table sync (docs/TABLE_SYNC_SPEC.md R7): the order moved to another table (before/after = table names).
+  TABLE_CHANGED
 }
 
 enum PaymentMethod {
@@ -204,6 +206,32 @@ enum TableSessionEventType {
   SHARE_REJECTED
   SHARE_UNMARKED
   BILL_PAID
+  // Table sync (docs/TABLE_SYNC_SPEC.md)
+  OPENED_BY_ORDER
+  AUTO_RELEASED
+  ORDER_MOVED_IN
+  ORDER_MOVED_OUT
+  TABLE_MOVED
+  MERGED
+  UNMERGED
+  SPLIT_OFF
+  SETTLED
+  MIGRATED
+  DAY_END_CLOSED
+}
+
+// How a table session was opened (docs/TABLE_SYNC_SPEC.md §3.1).
+enum TableSessionOpenedVia {
+  // Staff pressed Seat: opened on purpose, closed on purpose.
+  SEAT
+  // The first POS / order-taker order on a free table opened it.
+  STAFF_ORDER
+  // A released scheduled order opened it.
+  SCHEDULED_ORDER
+  // Part of a party moved here from another table.
+  SPLIT_OFF
+  // Created by the backfill for orders that were already on the table.
+  MIGRATION
 }
 
 // ================= STAFF / AUTH (POS side) =================
@@ -599,6 +627,10 @@ model Order {
   paymentScreenshotUrl String?
   // The customer's payment screenshot, stored as a PAYMENT_PROOF media asset (in Postgres).
   paymentProofMediaId  String?
+  // When the current proof was uploaded (null until one is, and for proofs from before this column existed).
+  paymentProofAt       DateTime?
+  // Why staff turned the payment down (<= 200 chars, shown to the customer); cleared by a new proof.
+  paymentRejectedReason String? @db.VarChar(200)
   paymentProofMedia    MediaAsset?      @relation("OrderPaymentProof", fields: [paymentProofMediaId], references: [id], onDelete: SetNull)
   paymentVerifiedById  String?
   paymentVerifiedBy    StaffUser?       @relation("PaymentVerifiedBy", fields: [paymentVerifiedById], references: [id])
@@ -1041,6 +1073,14 @@ model TableSession {
   voidReason    String?            @db.VarChar(200)
   // Bumped in the same transaction as anything a guest's poll shows; drives the poll's ETag.
   version       Int                @default(0)
+  // Table sync (docs/TABLE_SYNC_SPEC.md): how it was opened, and the order that opened it (history only, no FK).
+  openedVia       TableSessionOpenedVia @default(SEAT)
+  openedByOrderId String?
+  // Merged into another session: this row stays OPEN so its table stays taken; orders, guests and calls
+  // live on the parent. Restrict: a parent can't be deleted under its children.
+  mergedIntoSessionId String?
+  mergedInto          TableSession?  @relation("SessionMerge", fields: [mergedIntoSessionId], references: [id], onDelete: Restrict)
+  mergedChildren      TableSession[] @relation("SessionMerge")
   createdAt     DateTime           @default(now())
   updatedAt     DateTime           @updatedAt
 
@@ -1054,6 +1094,7 @@ model TableSession {
 
   @@index([diningAreaId, status])
   @@index([businessDayId, status])
+  @@index([mergedIntoSessionId])
 }
 
 // A phone that joined a session. The token is never stored, only its SHA-256.

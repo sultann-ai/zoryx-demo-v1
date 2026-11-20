@@ -60,7 +60,7 @@ describe("POST /business-day/end with unpaid orders", () => {
     vi.spyOn(service, "getUnpaidOrders").mockResolvedValue({ orders: [], total: new Prisma.Decimal(0) });
     const seatedAt = new Date("2026-11-19T10:00:00Z");
     vi.spyOn(service, "getOpenTableSessions").mockResolvedValue([
-      { id: "s-1", table: { name: "Table 5", area: "Family Hall" }, seatedAt, orderCount: 0 },
+      { id: "s-1", table: { name: "Table 5", area: "Family Hall" }, seatedAt, orderCount: 0, owed: "0.00", canClose: true },
     ]);
     const end = vi.spyOn(service, "endBusinessDay");
     const { res, response } = fakeResponse();
@@ -79,13 +79,17 @@ describe("POST /business-day/end with unpaid orders", () => {
   it("ends anyway with force: true", async () => {
     vi.spyOn(service, "getActiveBusinessDay").mockResolvedValue({ id: "day-1" } as Awaited<ReturnType<typeof service.getActiveBusinessDay>>);
     const unpaid = vi.spyOn(service, "getUnpaidOrders");
-    vi.spyOn(service, "endBusinessDay").mockResolvedValue({ id: "day-1", isActive: false } as Awaited<ReturnType<typeof service.endBusinessDay>>);
+    // Table sync R6: a forced end goes through endBusinessDayForced, which closes the tables that owe nothing.
+    const forced = vi
+      .spyOn(service, "endBusinessDayForced")
+      .mockResolvedValue({ id: "day-1", isActive: false } as Awaited<ReturnType<typeof service.endBusinessDayForced>>);
     const { res, response } = fakeResponse();
 
     await controller.end(request({ force: true }), response);
 
     expect(res.statusCode).toBe(200);
     expect(unpaid).not.toHaveBeenCalled();
+    expect(forced).toHaveBeenCalledWith("day-1", expect.any(String));
   });
 });
 

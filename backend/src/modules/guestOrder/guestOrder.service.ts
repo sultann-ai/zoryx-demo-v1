@@ -254,6 +254,8 @@ const publicStatusSelect = {
   paymentMethod: true,
   paymentStatus: true,
   paymentProofMediaId: true,
+  paymentProofAt: true,
+  paymentRejectedReason: true,
   cancelledReason: true,
   discount: true,
   deliveryFee: true,
@@ -298,7 +300,8 @@ export async function getPublicOrderStatus(publicId: string) {
 
 // Stores the (already processed) proof as a PAYMENT_PROOF asset and points the order at it,
 // deleting any earlier proof in the same transaction. Only for an ONLINE order that is still
-// waiting for its payment to be verified.
+// waiting for its payment to be verified, or whose payment staff turned down (then a new proof puts it
+// back in the queue: AWAITING_VERIFICATION, the old reason cleared).
 export async function attachPaymentProof(publicId: string, processed: ProcessedMedia) {
   const result = await prisma.$transaction(async (tx) => {
     const order = await tx.order.findUnique({
@@ -311,7 +314,7 @@ export async function attachPaymentProof(publicId: string, processed: ProcessedM
     const isOpen = order.status !== OrderStatus.CANCELLED && order.status !== OrderStatus.COMPLETED;
     if (
       order.paymentMethod !== PaymentMethod.ONLINE ||
-      order.paymentStatus !== PaymentStatus.AWAITING_VERIFICATION ||
+      (order.paymentStatus !== PaymentStatus.AWAITING_VERIFICATION && order.paymentStatus !== PaymentStatus.REJECTED) ||
       !isOpen
     ) {
       throw new NotAwaitingPaymentError();
@@ -334,9 +337,17 @@ export async function attachPaymentProof(publicId: string, processed: ProcessedM
       },
       select: { id: true },
     });
-    await tx.order.update({ where: { id: order.id }, data: { paymentProofMediaId: asset.id } });
+    await tx.order.update({
+      where: { id: order.id },
+      data: {
+        paymentProofMediaId: asset.id,
+        paymentProofAt: new Date(),
+        paymentStatus: PaymentStatus.AWAITING_VERIFICATION,
+        paymentRejectedReason: null,
+      },
+    });
     await releaseMediaIfUnreferenced(tx, order.paymentProofMediaId);
-    return { orderId: order.id, orderNumber: order.orderNumber, paymentStatus: order.paymentStatus, paymentMethod: order.paymentMethod };
+    return { orderId: order.id, orderNumber: order.orderNumber, paymentStatus: PaymentStatus.AWAITING_VERIFICATION, paymentMethod: order.paymentMethod };
   });
 
   // Reception's open Incoming card refreshes to show the new proof.
@@ -351,4 +362,10 @@ export async function attachPaymentProof(publicId: string, processed: ProcessedM
     paymentStatus: result.paymentStatus,
     hasProof: true,
   });
+}
+
+// The id of the order's payment-proof media asset for its own status link, or null (unknown link / no proof yet).
+export async function getPublicProofMediaId(publicId: string): Promise<string | null> {
+  const order = await prisma.order.findUnique({ where: { publicId }, select: { paymentProofMediaId: true } });
+  return order?.paymentProofMediaId ?? null;
 }

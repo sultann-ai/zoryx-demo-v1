@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import type { FormEvent } from "react";
-import { getApiErrorMessage } from "../api/errors";
+import { tableErrorMessage } from "../lib/tableErrors";
 import type { DiningArea, DiningAreaType } from "../api/diningAreas";
 import { DINING_AREA_SECTION_MAX_LENGTH } from "../api/diningAreas";
 import {
@@ -104,7 +104,7 @@ export function DiningAreasPage() {
       }
       startCreate();
     } catch (error) {
-      setFormError(getApiErrorMessage(error, "Failed to save dining area"));
+      setFormError(tableErrorMessage(error, "Failed to save dining area"));
     }
   }
 
@@ -118,7 +118,7 @@ export function DiningAreasPage() {
         startCreate();
       }
     } catch (error) {
-      window.alert(getApiErrorMessage(error, "Failed to delete dining area"));
+      window.alert(tableErrorMessage(error, "Failed to delete dining area"));
     }
   }
 

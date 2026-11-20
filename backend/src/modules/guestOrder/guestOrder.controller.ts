@@ -1,6 +1,7 @@
 import { randomInt } from "crypto";
 import { Request, Response } from "express";
 import { InvalidImageError, processProof } from "../../common/media/processImage";
+import { sendPaymentProof } from "../media/sendPaymentProof";
 import {
   BelowMinimumError,
   DealNotFoundError,
@@ -161,4 +162,21 @@ export async function uploadPaymentProof(req: Request, res: Response) {
     }
     throw error;
   }
+}
+
+// GET /api/online/orders/:publicId/payment-proof?size=thumb — the customer's own proof as a small thumbnail, for the
+// status page's "this is what you sent". The unguessable status link is the key (like the status itself). Thumbnail
+// only: the full image stays staff-only. Private cache; the page adds ?v=<proofSentAt> so a replaced proof shows at once.
+export async function getPaymentProofThumb(req: Request, res: Response) {
+  const publicId = req.params.publicId;
+  if (!isPlausiblePublicId(publicId)) {
+    fail(res, 404, "NOT_FOUND", "Order not found");
+    return;
+  }
+  if (req.query.size !== "thumb") {
+    fail(res, 400, "BAD_REQUEST", "size must be thumb");
+    return;
+  }
+  const mediaId = await guestOrderService.getPublicProofMediaId(publicId);
+  await sendPaymentProof(req, res, mediaId, "No payment proof");
 }

@@ -13,6 +13,7 @@ import type {
   ReviewedOrderChange,
 } from "../api/orders";
 import type { OrderDetail } from "../api/orders";
+import { applyPlacedOrderToFloor } from "./useTables";
 import { ordersApi } from "../api/orders";
 
 export function useOrdersList(filter: ListOrdersFilter) {
@@ -45,7 +46,11 @@ export function useCreateOrder() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (input: CreateOrderInput) => ordersApi.create(input),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["orders", "list"] }),
+    onSuccess: (order) => {
+      queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
+      // A dine-in order takes its table at once on the map (table sync).
+      applyPlacedOrderToFloor(queryClient, order);
+    },
   });
 }
 
@@ -227,6 +232,7 @@ export function useSubmitOrder() {
     onSuccess: (order) => {
       queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
       queryClient.setQueryData(["orders", "detail", order.id], order);
+      applyPlacedOrderToFloor(queryClient, order);
     },
   });
 }

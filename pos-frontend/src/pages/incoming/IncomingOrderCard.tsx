@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
 import type { Kitchen } from "../../api/kitchens";
 import type { OrderDetail, OrderTableGuest, PaymentMethod } from "../../api/orders";
-import { getApiErrorMessage, getApiErrorStatus } from "../../api/errors";
+import { getApiErrorBody, getApiErrorMessage, getApiErrorStatus } from "../../api/errors";
+import { TableConflictDialog } from "../../components/TableConflictDialog";
+import { getTableConflict, tableErrorMessage } from "../../lib/tableErrors";
+import type { TableConflict } from "../../lib/tableErrors";
 import { useAcceptOrder, useRejectOrder, useUpdateSubmission } from "../../hooks/useOrders";
 import { useTableRoundNumber } from "../../hooks/useTables";
 import { usePrintDocs } from "../../hooks/usePrinter";
@@ -59,6 +62,9 @@ export function IncomingOrderCard({ order, kitchens, onGone, onPrintFailure }: I
   );
   const [isRejectOpen, setIsRejectOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  // Table sync R2a: a scheduled dine-in order released while its table was busy — reception says whether
+  // it goes on that table's bill.
+  const [tableDecision, setTableDecision] = useState<{ conflict: TableConflict; andPrint: boolean } | null>(null);
 
   const { staff } = useAuth();
   // An online admin may accept or reject online orders, but not give a discount or re-price (the
@@ -103,9 +109,11 @@ export function IncomingOrderCard({ order, kitchens, onGone, onPrintFailure }: I
     order.paymentScreenshotUrl === null &&
     paymentMethod !== "CASH";
 
+  // "Already reviewed" (a plain 409 with no code) means someone else got there first: drop the card. A 409
+  // with a code is a table conflict to deal with here (TABLE_DECISION_NEEDED, SPLIT_HAS_PAYMENTS, …).
   function handle409<T>(promise: Promise<T>): Promise<T | undefined> {
     return promise.catch((error: unknown) => {
-      if (getApiErrorStatus(error) === 409) {
+      if (getApiErrorStatus(error) === 409 && !getApiErrorBody(error)?.code) {
         onGone(order.id);
         return undefined;
       }
@@ -113,7 +121,7 @@ export function IncomingOrderCard({ order, kitchens, onGone, onPrintFailure }: I
     });
   }
 
-  async function handleAccept(andPrint: boolean) {
+  async function handleAccept(andPrint: boolean, expectedTableSessionId?: string | null) {
     setActionError(null);
     const discountNumber = discount.trim() === "" ? undefined : Number(discount);
     if (discountNumber !== undefined && (Number.isNaN(discountNumber) || discountNumber < 0)) {
@@ -133,9 +141,11 @@ export function IncomingOrderCard({ order, kitchens, onGone, onPrintFailure }: I
             ...(discountNumber !== undefined ? { discount: discountNumber } : {}),
             ...(discountNumber !== undefined && discountNumber > 0 ? { discountReason: discountReason.trim() } : {}),
             ...(isOnlinePaid ? { paymentVerified: true } : {}),
+            ...(expectedTableSessionId !== undefined ? { expectedTableSessionId } : {}),
           },
         }),
       );
+      setTableDecision(null);
       if (!accepted) {
         return;
       }
@@ -148,7 +158,13 @@ export function IncomingOrderCard({ order, kitchens, onGone, onPrintFailure }: I
         }
       }
     } catch (error) {
-      setActionError(getApiErrorMessage(error, "Failed to accept order"));
+      const conflict = getTableConflict(error);
+      if (conflict) {
+        setTableDecision({ conflict, andPrint });
+        return;
+      }
+      setTableDecision(null);
+      setActionError(tableErrorMessage(error, "Failed to accept order"));
     }
   }
 
@@ -158,7 +174,7 @@ export function IncomingOrderCard({ order, kitchens, onGone, onPrintFailure }: I
       await handle409(rejectMutation.mutateAsync({ id: order.id, input: { reason, paymentRejected } }));
       setIsRejectOpen(false);
     } catch (error) {
-      setActionError(getApiErrorMessage(error, "Failed to reject order"));
+      setActionError(tableErrorMessage(error, "Failed to reject order"));
     }
   }
 
@@ -204,7 +220,7 @@ export function IncomingOrderCard({ order, kitchens, onGone, onPrintFailure }: I
       );
       setIsEditing(false);
     } catch (error) {
-      setActionError(getApiErrorMessage(error, "Failed to save changes"));
+      setActionError(tableErrorMessage(error, "Failed to save changes"));
     }
   }
 
@@ -422,6 +438,17 @@ export function IncomingOrderCard({ order, kitchens, onGone, onPrintFailure }: I
         isPickup={isPickup(order)}
       />
 
+      <TableConflictDialog
+        conflict={tableDecision?.conflict ?? null}
+        tableName={order.diningArea?.name ?? "This table"}
+        isSubmitting={acceptMutation.isPending}
+        pickAnotherLabel="Not now"
+        onClose={() => {
+          setTableDecision(null);
+          setActionError("Not sent. To put it on another table, open the order and use Move to table, then send it.");
+        }}
+        onConfirm={(expectedTableSessionId) => tableDecision && void handleAccept(tableDecision.andPrint, expectedTableSessionId)}
+      />
     </div>
   );
 }

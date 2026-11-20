@@ -1,11 +1,13 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import type { ApiErrorBody } from "../api/errors";
+import type { ApiErrorBody, OpenTableSession } from "../api/errors";
 import { getApiErrorBody, getApiErrorMessage, getApiErrorStatus } from "../api/errors";
 import { useAuth } from "../context/AuthContext";
 import { useCurrentBusinessDay, useEndBusinessDay, useStartBusinessDay } from "../hooks/useBusinessDay";
 import { useCancelOrder, useCancelScheduledOrder, useReleaseScheduledOrder } from "../hooks/useOrders";
+import { useCloseTableSession, useFloorById } from "../hooks/useTables";
+import { tableErrorMessage } from "../lib/tableErrors";
 import { formatMoney } from "../lib/format";
 import { formatShopTime } from "../lib/shopTime";
 import { ORDER_STATUS_LABEL, orderTypeLabel } from "../lib/enumLabels";
@@ -22,6 +24,8 @@ type UnpaidOrder = NonNullable<ApiErrorBody["unpaidOrders"]>[number];
 interface EndDayBlockers {
   openOrders: OpenOrder[];
   unpaidOrders: UnpaidOrder[];
+  // Table sync R6: tables still open on the day, what each owes, and whether a forced end closes it.
+  openTables: OpenTableSession[];
 }
 
 interface Notice {
@@ -49,12 +53,16 @@ export function BusinessDayBar() {
   const releaseMutation = useReleaseScheduledOrder();
   const cancelScheduledMutation = useCancelScheduledOrder();
   const cancelMutation = useCancelOrder();
+  const closeTableMutation = useCloseTableSession();
+  const [tableErrors, setTableErrors] = useState<Record<string, string>>({});
   // Set when ending the day was refused because scheduled orders are still on hold.
   const [pendingScheduled, setPendingScheduled] = useState<PendingScheduled | null>(null);
   const [scheduledBusy, setScheduledBusy] = useState(false);
   const [scheduledError, setScheduledError] = useState<string | null>(null);
   // Set when ending the day was refused because orders are still open or unpaid.
   const [blockers, setBlockers] = useState<EndDayBlockers | null>(null);
+  // Only read while the End Day dialog lists open tables (to link each to its sheet on the map).
+  const floorById = useFloorById(canManageBusinessDay && (blockers?.openTables.length ?? 0) > 0);
   const [endError, setEndError] = useState<string | null>(null);
   const [completeOrderId, setCompleteOrderId] = useState<string | null>(null);
   const [cancelTarget, setCancelTarget] = useState<OpenOrder | null>(null);
@@ -71,8 +79,23 @@ export function BusinessDayBar() {
   async function handleEnd(force = false) {
     setEndError(null);
     try {
-      await endMutation.mutateAsync(force);
+      const ended = await endMutation.mutateAsync(force);
       setBlockers(null);
+      const leftOpen = ended.leftOpenTableSessions ?? [];
+      const closed = ended.closedTableSessions ?? [];
+      if (leftOpen.length > 0 || closed.length > 0) {
+        setNotice({
+          title: "Day ended",
+          message: [
+            closed.length > 0 ? `Closed with the day (nothing owed): ${closed.map((table) => table.tableName).join(", ")}.` : null,
+            leftOpen.length > 0
+              ? `Still open, shown as "From yesterday" until someone settles or closes them: ${leftOpen.map((table) => table.tableName).join(", ")}. They take no new orders.`
+              : null,
+          ]
+            .filter(Boolean)
+            .join(" "),
+        });
+      }
     } catch (error) {
       const status = getApiErrorStatus(error);
       const body = getApiErrorBody(error);
@@ -86,11 +109,13 @@ export function BusinessDayBar() {
       }
       const openOrders = body?.openOrders ?? [];
       const unpaidOrders = body?.unpaidOrders ?? [];
-      if (status === 400 && (openOrders.length > 0 || unpaidOrders.length > 0)) {
-        setBlockers({ openOrders, unpaidOrders });
+      const openTables = body?.openTableSessions ?? [];
+      if (status === 400 && (openOrders.length > 0 || unpaidOrders.length > 0 || openTables.length > 0)) {
+        setTableErrors({});
+        setBlockers({ openOrders, unpaidOrders, openTables });
         return;
       }
-      const message = getApiErrorMessage(error, "Failed to end business day");
+      const message = tableErrorMessage(error, "Failed to end business day");
       if (blockers) {
         setEndError(message);
       } else {
@@ -107,9 +132,20 @@ export function BusinessDayBar() {
         ? {
             openOrders: current.openOrders.filter((order) => order.id !== orderId),
             unpaidOrders: current.unpaidOrders.filter((order) => order.id !== orderId),
+            openTables: current.openTables,
           }
         : current,
     );
+  }
+
+  // A table that owes nothing closes right here; one that owes money is settled from its own sheet.
+  function closeTableFromDialog(table: OpenTableSession) {
+    setTableErrors((current) => ({ ...current, [table.id]: "" }));
+    closeTableMutation.mutate(table.id, {
+      onSuccess: () =>
+        setBlockers((current) => (current ? { ...current, openTables: current.openTables.filter((entry) => entry.id !== table.id) } : current)),
+      onError: (error) => setTableErrors((current) => ({ ...current, [table.id]: tableErrorMessage(error, "Couldn't close this table.") })),
+    });
   }
 
   async function handleCancelBlocker(reason: string) {
@@ -200,7 +236,11 @@ export function BusinessDayBar() {
   const openIds = new Set((blockers?.openOrders ?? []).map((order) => order.id));
   // Finished (completed) orders nobody marked paid — no Complete/Cancel for those, only the order page.
   const unpaidDone = (blockers?.unpaidOrders ?? []).filter((order) => !openIds.has(order.id));
-  const isClear = blockers !== null && blockers.openOrders.length === 0 && unpaidDone.length === 0;
+  const isClear = blockers !== null && blockers.openOrders.length === 0 && unpaidDone.length === 0 && blockers.openTables.length === 0;
+  // A table orders' Complete goes through its table (USE_TABLE_BILL): find each open table on the floor map.
+  const tableIdBySession = new Map(
+    Array.from(floorById?.values() ?? []).flatMap((table) => (table.session ? [[table.session.id, table.id] as const] : [])),
+  );
 
   return (
     // A plain wrapper, not <header> — this renders inside TopBar's own <header>,
@@ -270,7 +310,10 @@ export function BusinessDayBar() {
                     <span className="text-numeric text-body text-ink">{formatMoney(order.totalAmount)}</span>
                     <StatusBadge status={order.paymentStatus} label={order.paymentStatus === "VERIFIED" ? "Paid" : "Unpaid"} />
                     <span className="ml-auto flex gap-2">
-                      {COMPLETABLE_STATUSES.has(order.status) ? (
+                      {order.type === "DINE_IN" && order.diningArea ? (
+                        // At a table: paid and finished through the table's bill (below), not one by one.
+                        <span className="self-center text-meta text-ink-muted">Settle with its table below</span>
+                      ) : COMPLETABLE_STATUSES.has(order.status) ? (
                         <Button variant="success" onClick={() => setCompleteOrderId(order.id)}>
                           Complete
                         </Button>
@@ -307,7 +350,56 @@ export function BusinessDayBar() {
               </ul>
             </div>
           )}
+          {blockers && blockers.openTables.length > 0 && (
+            <div className="flex flex-col gap-2">
+              <p className="text-body text-ink">
+                Tables still open ({blockers.openTables.length}). Settle each one from its table sheet, or close it if nothing is owed.
+              </p>
+              <ul className="flex list-none flex-col divide-y divide-border rounded-card border border-border">
+                {blockers.openTables.map((table) => {
+                  const tableId = tableIdBySession.get(table.id);
+                  const owed = Number(table.owed ?? 0);
+                  return (
+                    <li key={table.id} className="flex flex-col gap-1 px-3 py-2">
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                        <span className="font-semibold text-ink">{table.table.area ? `${table.table.area} · ${table.table.name}` : table.table.name}</span>
+                        <span className="text-body text-ink-muted tabular-nums">
+                          since {formatShopTime(table.seatedAt)} · {table.orderCount} {table.orderCount === 1 ? "order" : "orders"}
+                        </span>
+                        <span className="text-numeric text-body text-ink">{owed > 0 ? `${formatMoney(owed)} owed` : "Nothing owed"}</span>
+                        <span className="ml-auto flex gap-2">
+                          {tableId && (
+                            <Link to={`/tables?table=${tableId}`} className="self-center text-body font-medium text-accent" onClick={() => setBlockers(null)}>
+                              {owed > 0 ? "Open table to settle" : "Open table"}
+                            </Link>
+                          )}
+                          {table.canClose && (
+                            <Button variant="secondary" onClick={() => closeTableFromDialog(table)} disabled={closeTableMutation.isPending}>
+                              Close
+                            </Button>
+                          )}
+                        </span>
+                      </div>
+                      <span className="text-meta text-ink-muted">
+                        {table.canClose ? "Ending the day anyway closes this table too." : "Ending the day anyway leaves it open as “From yesterday” until it's settled."}
+                      </span>
+                      {tableErrors[table.id] && (
+                        <span role="alert" className="text-meta text-status-danger-text">
+                          {tableErrors[table.id]}
+                        </span>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
           {isClear && <p className="text-body text-ink">Every order is finished. The day can end now.</p>}
+          {!isClear && blockers && blockers.openTables.length > 0 && (
+            <p className="text-meta text-ink-muted">
+              End anyway: tables that owe nothing close with the day; the others stay open as &ldquo;From yesterday&rdquo; and take no new orders until settled.
+            </p>
+          )}
           {endError && (
             <p role="alert" className="text-body text-status-danger-text">
               {endError}

@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { getApiErrorMessage } from "../api/errors";
 import type { MenuItem } from "../api/menuItems";
-import type { OrderDetail, OrderType, PaymentMethod } from "../api/orders";
+import type { CreateOrderInput, OrderDetail, OrderType, PaymentMethod } from "../api/orders";
 import { useCurrentBusinessDay } from "../hooks/useBusinessDay";
 import { useDeals } from "../hooks/useDeals";
 import { useDiningAreas } from "../hooks/useDiningAreas";
@@ -11,7 +11,12 @@ import { useEmployees } from "../hooks/useEmployees";
 import { useKitchens } from "../hooks/useKitchens";
 import { useMenuItems } from "../hooks/useMenuItems";
 import { useCreateOrder, useOrder, useUpdateScheduledItems } from "../hooks/useOrders";
+import { useFloorById } from "../hooks/useTables";
 import { OrderStatusBadge } from "../components/OrderStatusBadge";
+import { TableConflictDialog } from "../components/TableConflictDialog";
+import { getTableConflict, tableErrorMessage } from "../lib/tableErrors";
+import type { TableConflict } from "../lib/tableErrors";
+import { expectedSessionFor, tableAvailability } from "./newOrder/tableAvailability";
 import { Card, EmptyState, PageHeader } from "../components/ui";
 import { ORDER_TYPE_LABEL } from "../lib/enumLabels";
 import type { WallTime } from "../lib/shopTime";
@@ -117,12 +122,18 @@ function NewOrderForm({ editingOrder }: { editingOrder: OrderDetail | null }) {
   const { data: deals, isError: isDealsError } = useDeals();
   const createMutation = useCreateOrder();
   const updateScheduledItemsMutation = useUpdateScheduledItems();
+  // Every table's live state (free / open / unavailable) for the table picker (table sync R2).
+  const floorById = useFloorById(!isEditingScheduled);
+  // "New order for this table" from the Tables page: /orders/new?table=<id>.
+  const [searchParams] = useSearchParams();
 
   const hasReferenceDataError =
     isKitchensError || isDiningAreasError || isEmployeesError || isMenuItemsError || isDealsError;
 
   const [type, setType] = useState<OrderType>("DINE_IN");
-  const [diningAreaId, setDiningAreaId] = useState("");
+  const [diningAreaId, setDiningAreaId] = useState(() => searchParams.get("table") ?? "");
+  // The order a table conflict (409) interrupted, waiting for "Add to Table 2's bill" or another table.
+  const [tableConflict, setTableConflict] = useState<{ conflict: TableConflict; input: CreateOrderInput } | null>(null);
   const [deliveryAddress, setDeliveryAddress] = useState("");
   const [waiterId, setWaiterId] = useState("");
   const [riderId, setRiderId] = useState("");
@@ -321,23 +332,47 @@ function NewOrderForm({ editingOrder }: { editingOrder: OrderDetail | null }) {
       setFormError("Select a dining area for a dine-in order.");
       return;
     }
+    const availability = tableAvailability(floorById?.get(diningAreaId));
+    if (type === "DINE_IN" && scheduledFor === undefined && availability.kind === "blocked") {
+      setFormError(availability.reason);
+      return;
+    }
 
+    await placeOrder({
+      type,
+      paymentMethod,
+      // A dine-in order placed now says which of the table's sessions the cashier saw (null = free); a
+      // scheduled one takes its table only when it's released.
+      ...(type === "DINE_IN"
+        ? { diningAreaId, ...(scheduledFor === undefined ? { expectedTableSessionId: expectedSessionFor(floorById?.get(diningAreaId)) } : {}) }
+        : {}),
+      ...(type === "DELIVERY" ? { deliveryAddress: deliveryAddress.trim() } : {}),
+      ...(waiterId !== "" ? { waiterId } : {}),
+      ...(riderId !== "" ? { riderId } : {}),
+      ...(scheduledFor !== undefined ? { scheduledFor } : {}),
+      items,
+      deals: toDealPayload(dealCart),
+    });
+  }
+
+  async function placeOrder(input: CreateOrderInput) {
     try {
-      const order = await createMutation.mutateAsync({
-        type,
-        paymentMethod,
-        ...(type === "DINE_IN" ? { diningAreaId } : {}),
-        ...(type === "DELIVERY" ? { deliveryAddress: deliveryAddress.trim() } : {}),
-        ...(waiterId !== "" ? { waiterId } : {}),
-        ...(riderId !== "" ? { riderId } : {}),
-        ...(scheduledFor !== undefined ? { scheduledFor } : {}),
-        items,
-        deals: toDealPayload(dealCart),
+      const order = await createMutation.mutateAsync(input);
+      setTableConflict(null);
+      // A scheduled order is on hold — the Scheduled list is where it's managed from now on. A table this
+      // order just opened is announced on the order's page, with its join PIN.
+      navigate(input.scheduledFor !== undefined ? "/scheduled" : `/orders/${order.id}`, {
+        state: order.tableOpened ? { tableOpened: order.tableOpened } : undefined,
       });
-      // A scheduled order is on hold — the Scheduled list is where it's managed from now on.
-      navigate(scheduledFor !== undefined ? "/scheduled" : `/orders/${order.id}`);
     } catch (error) {
-      setFormError(getApiErrorMessage(error, "Failed to create order"));
+      const conflict = getTableConflict(error);
+      if (conflict) {
+        // Asked once, in words: add to that table's bill, or go back and pick another table.
+        setTableConflict({ conflict, input });
+        return;
+      }
+      setTableConflict(null);
+      setFormError(tableErrorMessage(error, "Failed to create order"));
     }
   }
 
@@ -425,6 +460,7 @@ function NewOrderForm({ editingOrder }: { editingOrder: OrderDetail | null }) {
               employees={employees ?? []}
               paymentMethod={paymentMethod}
               onPaymentMethodChange={setPaymentMethod}
+              {...(floorById ? { floorById } : {})}
             />
             <Card>
               <div className="flex flex-col gap-4">
@@ -513,6 +549,18 @@ function NewOrderForm({ editingOrder }: { editingOrder: OrderDetail | null }) {
           </div>
         )}
       </form>
+
+      <TableConflictDialog
+        conflict={tableConflict?.conflict ?? null}
+        tableName={(diningAreas ?? []).find((area) => area.id === diningAreaId)?.name ?? "This table"}
+        isSubmitting={createMutation.isPending}
+        onClose={() => setTableConflict(null)}
+        onConfirm={(expectedTableSessionId) => {
+          if (tableConflict) {
+            void placeOrder({ ...tableConflict.input, expectedTableSessionId });
+          }
+        }}
+      />
 
       <SizePickerModal
         item={sizePickerItem}

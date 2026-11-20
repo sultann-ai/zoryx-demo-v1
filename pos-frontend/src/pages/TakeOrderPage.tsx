@@ -3,7 +3,7 @@ import type { FormEvent } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { getApiErrorMessage } from "../api/errors";
 import type { MenuItem } from "../api/menuItems";
-import type { OrderDetail } from "../api/orders";
+import type { OrderDetail, SubmitOrderInput } from "../api/orders";
 import { useCurrentBusinessDay } from "../hooks/useBusinessDay";
 import { useDeals } from "../hooks/useDeals";
 import { useDiningAreas } from "../hooks/useDiningAreas";
@@ -11,6 +11,11 @@ import { useKitchens } from "../hooks/useKitchens";
 import { useMenuItems } from "../hooks/useMenuItems";
 import { useCreateOrderChange, useOrder, useSubmitOrder, useUpdateSubmission } from "../hooks/useOrders";
 import { useTakerOrdersContext } from "../context/TakerOrdersContext";
+import { useFloorById } from "../hooks/useTables";
+import { TableConflictDialog } from "../components/TableConflictDialog";
+import { getTableConflict, tableErrorMessage } from "../lib/tableErrors";
+import type { TableConflict } from "../lib/tableErrors";
+import { expectedSessionFor, tableAvailability } from "./newOrder/tableAvailability";
 import { Button, EmptyState, PageHeader, Textarea } from "../components/ui";
 import { CartPanel } from "./newOrder/CartPanel";
 import { KitchenTabs } from "./newOrder/KitchenTabs";
@@ -39,7 +44,7 @@ import {
   setDealLineNotes,
   toDealPayload,
 } from "./newOrder/dealCart";
-import { DiningAreaPicker } from "./newOrder/DiningAreaPicker";
+import { DiningAreaPicker, TableChoiceNote } from "./newOrder/DiningAreaPicker";
 import { buildKitchenTagColorMap } from "./newOrder/kitchenTagColor";
 import { useMenuGridSearch } from "./newOrder/useMenuGridSearch";
 import { TakerDealCustomizeDialog } from "./takeOrder/TakerDealCustomizeDialog";
@@ -50,6 +55,9 @@ type Step = "table" | "items" | "confirmation";
 interface ConfirmationInfo {
   orderNumber: number;
   tableName: string;
+  // Table sync: this order seated the table (with its join PIN when that's on), or joined its open bill.
+  opened: boolean;
+  pin: string | null;
 }
 
 interface EditLocationState {
@@ -101,11 +109,18 @@ function TakeOrderForm({ editOrderId, editingOrder }: TakeOrderFormProps) {
   const submitMutation = useSubmitOrder();
   const updateSubmissionMutation = useUpdateSubmission();
   const createChangeMutation = useCreateOrderChange();
+  // Every table's live state for the picker (table sync R2); the shell's socket keeps it fresh.
+  const floorById = useFloorById(!isEditMode);
+  const location = useLocation();
+  // "New order for this table" from the Tables tab: /take-order?table=<id>.
+  const linkedTableId = isEditMode ? null : new URLSearchParams(location.search).get("table");
 
   const initial = editingOrder ? hydrateCart(editingOrder) : null;
 
-  const [step, setStep] = useState<Step>(isEditMode ? "items" : "table");
-  const [diningAreaId, setDiningAreaId] = useState(editingOrder?.diningAreaId ?? "");
+  const [step, setStep] = useState<Step>(isEditMode || linkedTableId ? "items" : "table");
+  const [diningAreaId, setDiningAreaId] = useState(editingOrder?.diningAreaId ?? linkedTableId ?? "");
+  // The send a table conflict (409) interrupted, waiting for "Add to Table 2's bill" or another table.
+  const [tableConflict, setTableConflict] = useState<{ conflict: TableConflict; input: SubmitOrderInput } | null>(null);
   const [kitchenFilter, setKitchenFilter] = useState("");
   // Separate from the cart — typing, clearing or changing the search never touches it.
   const [searchQuery, setSearchQuery] = useState("");
@@ -192,6 +207,29 @@ function TakeOrderForm({ editOrderId, editingOrder }: TakeOrderFormProps) {
     setStep("items");
   }
 
+  async function sendOrder(input: SubmitOrderInput) {
+    try {
+      const order = await submitMutation.mutateAsync(input);
+      setTableConflict(null);
+      setIsCartExpanded(false);
+      setConfirmation({
+        orderNumber: order.orderNumber,
+        tableName: order.diningArea?.name ?? diningAreaName,
+        opened: Boolean(order.tableOpened),
+        pin: order.tableOpened?.pin ?? null,
+      });
+      setStep("confirmation");
+    } catch (error) {
+      const conflict = getTableConflict(error);
+      if (conflict) {
+        setTableConflict({ conflict, input });
+        return;
+      }
+      setTableConflict(null);
+      setFormError(tableErrorMessage(error, "Failed to send order"));
+    }
+  }
+
   function handleAddItem(menuItemId: string, variantId?: string, variantLabel?: string) {
     setCart((prev) => incrementQuantity(prev, menuItemId, variantId, variantLabel));
   }
@@ -268,18 +306,23 @@ function TakeOrderForm({ editOrderId, editingOrder }: TakeOrderFormProps) {
         navigate("/my-orders");
         return;
       }
-      const order = await submitMutation.mutateAsync({
+      const availability = tableAvailability(floorById?.get(diningAreaId));
+      if (availability.kind === "blocked") {
+        setFormError(availability.reason);
+        return;
+      }
+      // Says which of the table's sessions the waiter saw (null = it looked free); the same request id on
+      // a resend after a conflict, so a dropped answer still can't make two orders.
+      await sendOrder({
         diningAreaId,
+        expectedTableSessionId: expectedSessionFor(floorById?.get(diningAreaId)),
         items,
         deals: dealsPayload,
         ...(notes.trim() !== "" ? { notes: notes.trim() } : {}),
         clientRequestId,
       });
-      setIsCartExpanded(false);
-      setConfirmation({ orderNumber: order.orderNumber, tableName: order.diningArea?.name ?? diningAreaName });
-      setStep("confirmation");
     } catch (error) {
-      setFormError(getApiErrorMessage(error, isEditMode ? "Failed to save changes" : "Failed to send order"));
+      setFormError(tableErrorMessage(error, isEditMode ? "Failed to save changes" : "Failed to send order"));
     }
   }
 
@@ -289,6 +332,17 @@ function TakeOrderForm({ editOrderId, editingOrder }: TakeOrderFormProps) {
         <h1 className="font-heading text-title font-semibold text-ink">
           Sent to reception — Order #{confirmation.orderNumber}, Table {confirmation.tableName}
         </h1>
+        <p role="status" className="m-0 max-w-sm text-body text-ink-muted">
+          {confirmation.opened
+            ? `${confirmation.tableName} is now open and shows as taken on the map.`
+            : `Added to ${confirmation.tableName}'s bill.`}
+          {confirmation.pin && (
+            <>
+              {" "}
+              Guests' join PIN: <strong className="tabular-nums tracking-[0.2em] text-ink">{confirmation.pin}</strong>
+            </>
+          )}
+        </p>
         <div className="flex w-full max-w-sm flex-col gap-3">
           <Button size="lg" onClick={() => resetForNewOrder(diningAreaId)}>
             Add more for this table
@@ -332,6 +386,7 @@ function TakeOrderForm({ editOrderId, editingOrder }: TakeOrderFormProps) {
           selectedId={diningAreaId}
           onSelect={handleSelectTable}
           layout="grouped"
+          {...(floorById ? { floorById } : {})}
         />
       </div>
     );
@@ -377,6 +432,14 @@ function TakeOrderForm({ editOrderId, editingOrder }: TakeOrderFormProps) {
   return (
     <div className="flex flex-col gap-4">
       <PageHeader title={isEditMode ? "Edit order" : "New Order"} description={diningAreaName || undefined} />
+      {!isEditMode && floorById && (
+        <div className="flex flex-col gap-2">
+          <TableChoiceNote table={activeDiningAreas.find((area) => area.id === diningAreaId)} floorTable={floorById.get(diningAreaId)} />
+          <Button variant="secondary" className="self-start" onClick={() => setStep("table")}>
+            Change table
+          </Button>
+        </div>
+      )}
 
       <form onSubmit={handleSubmit} className="flex flex-col gap-4">
         <div className="flex flex-col gap-4 pb-24">
@@ -443,6 +506,21 @@ function TakeOrderForm({ editOrderId, editingOrder }: TakeOrderFormProps) {
           </div>
         )}
       </form>
+
+      <TableConflictDialog
+        conflict={tableConflict?.conflict ?? null}
+        tableName={diningAreaName || "This table"}
+        isSubmitting={submitMutation.isPending}
+        onClose={() => {
+          setTableConflict(null);
+          setStep("table");
+        }}
+        onConfirm={(expectedTableSessionId) => {
+          if (tableConflict) {
+            void sendOrder({ ...tableConflict.input, expectedTableSessionId });
+          }
+        }}
+      />
 
       <SizePickerModal
         item={sizePickerItem}

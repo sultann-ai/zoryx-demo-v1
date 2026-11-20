@@ -1,6 +1,7 @@
 import type { DiningArea } from "../../api/diningAreas";
 import type { Employee } from "../../api/employees";
 import type { OrderType, PaymentMethod } from "../../api/orders";
+import type { FloorTable } from "../../api/tables";
 import { Card, Input } from "../../components/ui";
 import { ChipSelectRow } from "./ChipSelectRow";
 import { DiningAreaPicker } from "./DiningAreaPicker";
@@ -32,6 +33,8 @@ interface OrderMetaBarProps {
   employees: Employee[];
   paymentMethod: PaymentMethod;
   onPaymentMethodChange: (method: PaymentMethod) => void;
+  // The live floor map by table id: what each table's tile shows (free / open / unavailable).
+  floorById?: Map<string, FloorTable>;
 }
 
 // Everything needed to place the order besides the items themselves, without
@@ -52,6 +55,7 @@ export function OrderMetaBar({
   employees,
   paymentMethod,
   onPaymentMethodChange,
+  floorById,
 }: OrderMetaBarProps) {
   const activeDiningAreas = diningAreas.filter((area) => area.isActive);
   const activeEmployees = employees.filter((employee) => employee.isActive);
@@ -83,7 +87,12 @@ export function OrderMetaBar({
         {type === "DINE_IN" && (
           <div className="flex flex-col gap-2">
             <span className="text-meta font-medium text-ink-muted">Table</span>
-            <DiningAreaPicker diningAreas={activeDiningAreas} selectedId={diningAreaId} onSelect={onDiningAreaChange} />
+            <DiningAreaPicker
+              diningAreas={activeDiningAreas}
+              selectedId={diningAreaId}
+              onSelect={onDiningAreaChange}
+              {...(floorById ? { floorById } : {})}
+            />
           </div>
         )}
 

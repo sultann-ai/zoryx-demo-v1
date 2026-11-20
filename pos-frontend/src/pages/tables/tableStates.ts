@@ -15,6 +15,8 @@ export const TABLE_STATE_META: Record<TableState, { label: string; short: string
   BILL_REQUESTED: { label: "Bill requested", short: "Bill", tone: "warning" },
   PAYING: { label: "Paying", short: "Paying", tone: "active" },
   UNAVAILABLE: { label: "Out of service", short: "Off", tone: "neutral" },
+  // Table sync R6: left open past a forced day end — settle or close it before anyone sits there.
+  PREVIOUS_DAY: { label: "From yesterday", short: "Old", tone: "danger" },
 };
 
 // Legend order: the order a table usually moves through during a meal.
@@ -26,6 +28,7 @@ export const LEGEND_STATES: TableState[] = [
   "SERVED",
   "BILL_REQUESTED",
   "PAYING",
+  "PREVIOUS_DAY",
   "UNAVAILABLE",
 ];
 
@@ -83,9 +86,18 @@ export function areaLabel(area: string | null | ""): string {
 // The second line of a tile: who's there and for how long, or the seat count when it's free.
 export function tileMeta(table: FloorTable, now: number): string {
   if (table.session) {
+    if (table.session.joinedTo) {
+      return `with ${table.session.joinedTo.name}`;
+    }
     const guests = table.session.guestCount;
+    const elapsed = formatElapsed(table.session.seatedAt, now);
+    // Opened by a POS or waiter order with nobody on a phone: the orders say more than "0 guests".
+    if (guests === 0 && (table.session.orderCount ?? 0) > 0) {
+      const orders = table.session.orderCount ?? 0;
+      return `${orders} ${orders === 1 ? "order" : "orders"} · ${elapsed}`;
+    }
     const seats = table.capacity ? `/${table.capacity}` : "";
-    return `${guests}${seats} guests · ${formatElapsed(table.session.seatedAt, now)}`;
+    return `${guests}${seats} guests · ${elapsed}`;
   }
   if (table.capacity) {
     return `${table.capacity} seats`;

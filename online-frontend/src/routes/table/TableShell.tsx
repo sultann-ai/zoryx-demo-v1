@@ -44,12 +44,14 @@ function TableTabs({ qrKey, hidden }: { qrKey: string; hidden: boolean }) {
 export function TableShell({
   qrKey,
   table,
+  tableTitle,
   joined = false,
   children,
 }: {
   qrKey: string
   /** Null while the table is still loading. */
   table: TableInfo | null
+  tableTitle?: string
   joined?: boolean
   children: ReactNode
 }) {
@@ -73,7 +75,7 @@ export function TableShell({
         title={
           <>
             <span className="block truncate font-sans text-sm font-normal text-muted">{shop}</span>
-            <span className="block truncate">{table ? tableLabel(table) : t('table.title')}</span>
+            <span className="block truncate">{tableTitle ?? (table ? tableLabel(table) : t('table.title'))}</span>
           </>
         }
       />

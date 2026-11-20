@@ -137,16 +137,28 @@ function NotFoundTable() {
 }
 
 /** The token stopped working (staff closed the table, removed the guest, or the session ended). */
-function SessionEnded({ qrKey, onContinue }: { qrKey: string; onContinue: () => void }) {
+function SessionEnded({ qrKey, receiptKey, onContinue }: { qrKey: string; receiptKey?: string; onContinue: () => void }) {
   const { t } = useT()
   usePageTitle(t('table.ended.title'))
   return (
     <TableShell qrKey={qrKey} table={null}>
-      <AppState icon="cup" title={t('table.ended.title')} body={t('table.ended.body')} role="status">
-        <Button onClick={onContinue}>
-          <Icon name="list" />
-          <span>{t('table.ended.cta')}</span>
-        </Button>
+      <AppState
+        icon={receiptKey ? 'receipt' : 'cup'}
+        title={receiptKey ? t('table.ended.paidTitle') : t('table.ended.title')}
+        body={receiptKey ? t('table.ended.paidBody') : t('table.ended.askWaiter')}
+        role="status"
+      >
+        {receiptKey ? (
+          <ButtonRoute to={`/r/${receiptKey}`} replace>
+            <Icon name="receipt" />
+            <span>{t('table.ended.receipt')}</span>
+          </ButtonRoute>
+        ) : (
+          <Button onClick={onContinue}>
+            <Icon name="list" />
+            <span>{t('table.ended.cta')}</span>
+          </Button>
+        )}
       </AppState>
     </TableShell>
   )
@@ -179,19 +191,22 @@ function useRoundAlerts(poll: TableSessionPoll | undefined) {
   }, [poll, t])
 }
 
-function JoinedTable({ qrKey, token, onEnded }: { qrKey: string; token: string; onEnded: () => void }) {
+function JoinedTable({ qrKey, token, onEnded }: { qrKey: string; token: string; onEnded: (receiptKey?: string) => void }) {
   const session = useTableSession(token)
   const poll = session.data
 
-  const endSession = useCallback(() => {
+  const endSession = useCallback((receiptKey?: string) => {
     forgetSession(token)
     clearTableToken(qrKey)
     setCartPanel('closed')
-    onEnded()
+    onEnded(receiptKey)
   }, [token, qrKey, onEnded])
 
   useEffect(() => {
-    if (isSessionEnded(session.error)) endSession()
+    if (session.error instanceof ApiError && isSessionEnded(session.error)) {
+      const key = typeof session.error.details.receiptKey === 'string' ? session.error.details.receiptKey : undefined
+      endSession(key)
+    }
   }, [session.error, endSession])
   useRoundAlerts(poll)
   usePageTitle(poll ? poll.table.name : null)
@@ -221,7 +236,12 @@ function JoinedTable({ qrKey, token, onEnded }: { qrKey: string; token: string; 
 
   return (
     <TableContext.Provider value={value}>
-      <TableShell qrKey={qrKey} table={value.poll.table} joined>
+      <TableShell
+        qrKey={qrKey}
+        table={value.poll.table}
+        tableTitle={[value.poll.table.name, ...(value.poll.joinedTables ?? [])].join(' + ')}
+        joined
+      >
         <Routes>
           <Route index element={<TableHome />} />
           <Route path="menu" element={<JoinedMenu />} />
@@ -268,9 +288,11 @@ function TableRoot({ qrKey }: { qrKey: string }) {
   const navigate = useNavigate()
   const [token, setToken] = useState(() => readTableToken(qrKey))
   const [ended, setEnded] = useState(false)
+  const [endedReceiptKey, setEndedReceiptKey] = useState<string>()
 
-  const onEnded = useCallback(() => {
+  const onEnded = useCallback((receiptKey?: string) => {
     setToken(null)
+    setEndedReceiptKey(receiptKey)
     setEnded(true)
   }, [])
 
@@ -279,6 +301,7 @@ function TableRoot({ qrKey }: { qrKey: string }) {
     return (
       <SessionEnded
         qrKey={qrKey}
+        receiptKey={endedReceiptKey}
         onContinue={() => {
           void queryClient.invalidateQueries({ queryKey: ['table', qrKey] })
           setEnded(false)

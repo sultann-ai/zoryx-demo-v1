@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Prisma, StaffRole } from "../../../generated/prisma/client";
 import { isLocalDb, sharedFakeIO, withRollback } from "../../common/testDb";
 import * as orderService from "../order/order.service";
+import * as billService from "../table/tableBill.service";
 import * as sessionService from "../table/tableSession.service";
 import { parseTableOrderBody, TableGuestValidationError } from "./tableGuest.validators";
 import * as guestService from "./tableGuest.service";
@@ -252,15 +253,22 @@ describe.skipIf(!isLocalDb)("Table QR sessions with orders (local DB, rolled bac
       const blocked = await sessionService.closeSession(sessionId, world.waiter.id).catch((e) => e);
       await orderService.acceptOrder(placed.result.orderId, world.posAdmin.id, {});
       const stateKitchen = (await sessionService.getFloor()).tables.find((t) => t.id === world.table.id)?.state;
-      await tx.order.update({ where: { id: placed.result.orderId }, data: { paymentStatus: "VERIFIED" } });
-      await orderService.completeOrder(placed.result.orderId, world.posAdmin.id);
-      const closed = await sessionService.closeSession(sessionId, world.waiter.id);
+      // Table sync R4: a table's order is never completed one by one — the table is settled through its bill.
+      const perOrder = await orderService.completeOrder(placed.result.orderId, world.posAdmin.id).catch((e) => e);
+      const closed = await billService.settleTable(sessionId, { kind: "staff", id: world.posAdmin.id, role: StaffRole.POS_ADMIN }, {
+        method: "CASH",
+        paidAmount: null,
+        discount: undefined,
+        discountReason: null,
+        expectedBillVersion: undefined,
+      });
       const stateAfter = (await sessionService.getFloor()).tables.find((t) => t.id === world.table.id)?.state;
-      return { stateAwaiting, blocked, stateKitchen, closed, stateAfter };
+      return { stateAwaiting, blocked, stateKitchen, perOrder, closed, stateAfter };
     });
     expect(result.stateAwaiting).toBe("ORDER_AWAITING");
     expect(result.blocked).toMatchObject({ status: 409, code: "SESSION_HAS_OPEN_ORDERS" });
     expect(result.stateKitchen).toBe("IN_KITCHEN");
+    expect(result.perOrder).toMatchObject({ status: 409, code: "USE_TABLE_BILL" });
     expect(result.closed.session.status).toBe("CLOSED");
     expect(result.stateAfter).toBe("EMPTY");
   });

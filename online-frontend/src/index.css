@@ -602,6 +602,21 @@ html[lang="ur"] .btn {
   animation: add-done var(--dur-sheet) var(--ease-out);
 }
 
+/* The payment card moving to a new state (needs payment, sent, verified, rejected): it settles in with a short fade and rise. */
+@keyframes proof-swap {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.proof-swap {
+  animation: proof-swap var(--dur-sheet, 220ms) var(--ease-out, ease-out);
+}
+
 /* The small "added" pop on the + button. */
 @keyframes pop {
   0% {

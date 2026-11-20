@@ -19,5 +19,6 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src", "site.config.json"]
+  "include": ["src", "site.config.json"],
+  "exclude": ["src/**/*.test.ts"]
 }

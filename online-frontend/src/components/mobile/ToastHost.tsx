@@ -24,7 +24,7 @@ function Snackbar({ className }: { className: string }) {
 
 /** The snackbar on the page: above the tab bar and the mini-cart pill. Hidden while a sheet is open (the sheet has its own). */
 export function PageToasts() {
-  return <Snackbar className="toast-page fixed inset-x-3 bottom-[calc(var(--tabbar-h)+5rem)] z-40" />
+  return <Snackbar className="toast-page fixed inset-x-3 bottom-[calc(var(--tabbar-h,0px)+5rem)] z-40" />
 }
 
 /** The snackbar inside a sheet or page dialog (a dialog covers the page's), floating just above the sheet's footer. */

@@ -13,11 +13,10 @@ import { useT } from '../../../i18n'
 import { ErrorState } from '../../ErrorState'
 import { Icon } from '../../Icon'
 import { CashNote, NotFoundOrder, ReceiptList } from '../../order/OrderParts'
-import { PaymentBlock } from '../../order/PaymentBlock'
+import { OrderPayment } from '../../order/OrderPayment'
 import { PageSkeleton } from '../../Skeleton'
 import { ButtonLink } from '../../ui/Button'
 import { Card } from '../../ui/Card'
-import { PaymentSteps } from './PaymentSteps'
 import { StepProgress } from './StepProgress'
 
 /** The spinner that follows the finger while pulling, and spins while the refresh runs. */
@@ -129,13 +128,7 @@ export function OrderTracking({ publicId }: { publicId: string }) {
       )}
 
       {!cancelled && !online && <CashNote order={order} />}
-      {!cancelled &&
-        online &&
-        (order.payment.state === 'WAITING_FOR_PAYMENT' ? (
-          <PaymentSteps order={order} publicId={publicId} store={store.data} onUploaded={() => void query.refetch()} />
-        ) : (
-          <PaymentBlock order={order} store={store.data} />
-        ))}
+      {!cancelled && online && <OrderPayment order={order} publicId={publicId} store={store.data} />}
 
       <Card as="details" className="group">
         <summary className="flex min-h-touch cursor-pointer list-none items-center justify-between gap-3 px-4 py-2 text-lg font-bold text-ink">

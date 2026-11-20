@@ -277,7 +277,8 @@ export function OrdersPage() {
                     <StatusBadge status={order.paymentStatus} />
                     {/* Online payments go through the screenshot-verification flow instead —
                         this quick toggle is only for cash, settled at the table after eating. */}
-                    {order.paymentMethod === "CASH" && (
+                    {/* A table's orders are paid through the table's bill (table sync R4). */}
+                    {order.paymentMethod === "CASH" && !order.tableSessionId && (
                       <Button
                         variant="secondary"
                         className="mt-1"
@@ -293,10 +294,15 @@ export function OrdersPage() {
                 <TableCell>{new Date(order.createdAt).toLocaleString()}</TableCell>
                 <TableCell>
                   <div className="flex flex-wrap gap-2 max-md:justify-end">
-                    {COMPLETABLE_STATUSES.has(order.status) && (
+                    {COMPLETABLE_STATUSES.has(order.status) && !order.tableSessionId && (
                       <Button variant="success" onClick={() => setCompleteOrderId(order.id)}>
                         Complete
                       </Button>
+                    )}
+                    {order.tableSessionId && order.diningAreaId && COMPLETABLE_STATUSES.has(order.status) && (
+                      <Link to={`/tables?table=${order.diningAreaId}`} className={buttonClassName("secondary")}>
+                        Open table
+                      </Link>
                     )}
                     <Link to={`/orders/${order.id}`} className={buttonClassName("secondary")}>
                       View

@@ -42,7 +42,14 @@ import {
 import { billableOrderWhere, computeBillTotals, orderSubtotal, splitHasPayments, syncTableBill, type BillTotals } from "./tableBillGuard";
 import { callInclude, cancelOpenCallsInTransaction, emitCallRaised, emitCallsCancelled, resolveCallTarget } from "./tableCall.service";
 import { TableStaffError } from "./tableErrors";
-import { emitTableBillUpdated, emitTableUpdated, emitToFloor, SHARE_STATUSES_WITH_MONEY, touchTableSession } from "./tableNotify";
+import {
+  emitSessionUpdated,
+  emitTableBillUpdated,
+  emitTablesUpdated,
+  emitTableUpdated,
+  SHARE_STATUSES_WITH_MONEY,
+  touchTableSession,
+} from "./tableNotify";
 
 // The table bill (docs/TABLE_QR_SPEC.md §3.5, §3.6, §4.1 phase 2, §4.2 phase 2, §7). A view over the
 // session's orders: money stays on Order. Every write runs in one transaction that locks the session row,
@@ -68,6 +75,8 @@ const ordersAwaiting = () =>
   fail(409, "ORDERS_AWAITING", "An order from this table is still waiting at reception. Accept or reject it first.");
 const shareNotFound = () => fail(404, "NOT_FOUND", "Share not found");
 const notAwaitingPayment = () => fail(409, "NOT_AWAITING_PAYMENT", "This share isn't waiting for a payment");
+const sessionIsMerged = () =>
+  fail(409, "SESSION_IS_MERGED", "This table is joined to another table. Open that table, or unmerge first.");
 const billChanged = (version: number) => fail(409, "BILL_CHANGED", "The bill changed meanwhile. Here is the latest.", { billVersion: version });
 
 const actorStaffId = (actor: BillActor) => (actor.kind === "staff" ? actor.id : null);
@@ -434,81 +443,103 @@ export function setBillDiscount(
     if (hasMoney(live)) {
       throw splitHasPayments();
     }
-    let check;
-    try {
-      check = checkDiscountChange({
-        next: input.discount,
-        current: totals.discount,
-        subtotal: totals.subtotal,
-        actor: { actorId: actor.id, role: actor.role, reason: input.discountReason },
-        capPercent: await loadDiscountCap(tx),
-      });
-    } catch (error) {
-      if (error instanceof DiscountAboveCapError) {
-        throw fail(403, "DISCOUNT_ABOVE_CAP", error.message);
-      }
-      if (error instanceof DiscountReasonRequiredError || error instanceof DiscountReasonTooLongError) {
-        throw fail(400, "BAD_REQUEST", error.message);
-      }
-      throw error;
-    }
-    if (!check.changed) {
+    if (!(await applyBillDiscount(tx, bill, totals, actor, input.discount, input.discountReason))) {
       return { changed: false, diningAreaId: session.diningAreaId };
-    }
-    const parts = allocateDiscount(
-      totals.orders.map((order) => ({ id: order.id, orderNumber: order.orderNumber, subtotal: orderSubtotal(order) })),
-      input.discount,
-    );
-    const attribution = discountAttribution({ actorId: actor.id, role: actor.role }, check.reason);
-    for (const order of totals.orders) {
-      const next = parts.get(order.id) ?? D(0);
-      if (next.equals(order.discount)) {
-        continue;
-      }
-      const full = await tx.order.findUniqueOrThrow({ where: { id: order.id }, select: { deliveryFee: true } });
-      const totalAmount = computeOrderTotal({
-        itemsTotal: order.items.reduce((sum, item) => sum.plus(item.subtotal), D(0)),
-        dealLinesTotal: order.dealLines.reduce((sum, line) => sum.plus(line.subtotal), D(0)),
-        discount: next,
-        deliveryFee: full.deliveryFee,
-      });
-      const updated = await tx.order.updateMany({
-        where: { id: order.id, discount: order.discount, status: order.status },
-        data: { discount: next, totalAmount, ...attribution },
-      });
-      if (updated.count === 0) {
-        throw billChanged(bill.version);
-      }
-      await recordOrderEvent(tx, {
-        orderId: order.id,
-        actorId: actor.id,
-        type: "DISCOUNT_SET",
-        reason: check.reason,
-        before: { discount: moneyStr(order.discount), totalAmount: moneyStr(order.totalAmount) },
-        after: { discount: moneyStr(next), totalAmount: moneyStr(totalAmount), via: "table_bill" },
-      });
-    }
-    const after = await computeBillTotals(tx, sessionId);
-    if (live.length > 0) {
-      await tx.tableBillShare.updateMany({ where: { id: { in: live.map((share) => share.id) } }, data: { status: TableShareStatus.VOID } });
-    }
-    await bumpBill(tx, bill, {
-      subtotal: after.subtotal,
-      discount: after.discount,
-      total: after.total,
-      ...attribution,
-      ...(live.length > 0 ? { splitVersion: { increment: 1 } } : {}),
-    });
-    await recordBillEvent(tx, sessionId, actor, TableSessionEventType.BILL_DISCOUNT_SET, {
-      reason: check.reason,
-      before: { discount: moneyStr(totals.discount), total: moneyStr(totals.total) },
-      after: { discount: moneyStr(after.discount), total: moneyStr(after.total) },
-    });
-    if (live.length > 0) {
-      await recordBillEvent(tx, sessionId, actor, TableSessionEventType.SPLIT_CANCELLED, { reason: "The discount changed" });
     }
     return { changed: true, diningAreaId: session.diningAreaId };
   });
+}
+
+/**
+ * The bill discount's work, shared by PUT …/bill/discount and Settle: the cap and reason checks on the bill
+ * subtotal, the allocation onto the billable orders (each with its own DISCOUNT_SET event), the bill snapshot,
+ * and the split cancelled. Returns false when the discount doesn't change. Inside the bill write's transaction.
+ */
+async function applyBillDiscount(
+  tx: Tx,
+  bill: BillRow,
+  totals: BillTotals,
+  actor: Extract<BillActor, { kind: "staff" }>,
+  discount: Decimal,
+  discountReason: string | null,
+): Promise<boolean> {
+  const sessionId = bill.sessionId;
+  const input = { discount, discountReason };
+  const live = liveShares(bill);
+  let check;
+  try {
+    check = checkDiscountChange({
+      next: input.discount,
+      current: totals.discount,
+      subtotal: totals.subtotal,
+      actor: { actorId: actor.id, role: actor.role, reason: input.discountReason },
+      capPercent: await loadDiscountCap(tx),
+    });
+  } catch (error) {
+    if (error instanceof DiscountAboveCapError) {
+      throw fail(403, "DISCOUNT_ABOVE_CAP", error.message);
+    }
+    if (error instanceof DiscountReasonRequiredError || error instanceof DiscountReasonTooLongError) {
+      throw fail(400, "BAD_REQUEST", error.message);
+    }
+    throw error;
+  }
+  if (!check.changed) {
+    return false;
+  }
+  const parts = allocateDiscount(
+    totals.orders.map((order) => ({ id: order.id, orderNumber: order.orderNumber, subtotal: orderSubtotal(order) })),
+    input.discount,
+  );
+  const attribution = discountAttribution({ actorId: actor.id, role: actor.role }, check.reason);
+  for (const order of totals.orders) {
+    const next = parts.get(order.id) ?? D(0);
+    if (next.equals(order.discount)) {
+      continue;
+    }
+    const full = await tx.order.findUniqueOrThrow({ where: { id: order.id }, select: { deliveryFee: true } });
+    const totalAmount = computeOrderTotal({
+      itemsTotal: order.items.reduce((sum, item) => sum.plus(item.subtotal), D(0)),
+      dealLinesTotal: order.dealLines.reduce((sum, line) => sum.plus(line.subtotal), D(0)),
+      discount: next,
+      deliveryFee: full.deliveryFee,
+    });
+    const updated = await tx.order.updateMany({
+      where: { id: order.id, discount: order.discount, status: order.status },
+      data: { discount: next, totalAmount, ...attribution },
+    });
+    if (updated.count === 0) {
+      throw billChanged(bill.version);
+    }
+    await recordOrderEvent(tx, {
+      orderId: order.id,
+      actorId: actor.id,
+      type: "DISCOUNT_SET",
+      reason: check.reason,
+      before: { discount: moneyStr(order.discount), totalAmount: moneyStr(order.totalAmount) },
+      after: { discount: moneyStr(next), totalAmount: moneyStr(totalAmount), via: "table_bill" },
+    });
+  }
+  const after = await computeBillTotals(tx, sessionId);
+  if (live.length > 0) {
+    await tx.tableBillShare.updateMany({ where: { id: { in: live.map((share) => share.id) } }, data: { status: TableShareStatus.VOID } });
+  }
+  await bumpBill(tx, bill, {
+    subtotal: after.subtotal,
+    discount: after.discount,
+    total: after.total,
+    ...attribution,
+    ...(live.length > 0 ? { splitVersion: { increment: 1 } } : {}),
+  });
+  await recordBillEvent(tx, sessionId, actor, TableSessionEventType.BILL_DISCOUNT_SET, {
+    reason: check.reason,
+    before: { discount: moneyStr(totals.discount), total: moneyStr(totals.total) },
+    after: { discount: moneyStr(after.discount), total: moneyStr(after.total) },
+  });
+  if (live.length > 0) {
+    await recordBillEvent(tx, sessionId, actor, TableSessionEventType.SPLIT_CANCELLED, { reason: "The discount changed" });
+  }
+  return true;
 }
 
 // ================= Split =================
@@ -1086,75 +1117,372 @@ async function buildReceiptSnapshot(tx: Tx, sessionId: string, shares: ShareRow[
  * is made when anything was paid. Closing an already closed table answers the same result again.
  */
 export async function closeTable(sessionId: string, actorId: string) {
-  const outcome = await prisma.$transaction(async (tx) => {
-    const session = await lockSession(tx, sessionId);
-    if (session.status === TableSessionStatus.CLOSED) {
-      return { replay: true as const };
-    }
-    if (session.status !== TableSessionStatus.OPEN) {
-      throw sessionNotOpen();
-    }
-    const bill = await lockBill(tx, sessionId);
-    if (bill?.status === TableBillStatus.REQUESTED) {
-      throw fail(409, "BILL_NOT_PAID", "This table's bill isn't fully paid yet");
-    }
-    let completed: Awaited<ReturnType<typeof settleTableOrdersInTransaction>> = [];
-    let receiptShares: ShareRow[] = [];
-    if (bill?.status === TableBillStatus.PAID) {
-      const totals = await computeBillTotals(tx, sessionId);
-      if (totals.awaiting) {
-        throw ordersAwaiting();
-      }
-      if (!totals.total.equals(bill.total)) {
-        throw billChanged(bill.version);
-      }
-      receiptShares = liveShares(bill);
-      const allOnline = receiptShares.length > 0 && receiptShares.every((share) => share.method === PaymentMethod.ONLINE);
-      completed = await settleTableOrdersInTransaction(tx, sessionId, { actorId, paymentMethod: allOnline ? PaymentMethod.ONLINE : PaymentMethod.CASH });
-    } else {
-      const open = await tx.order.findMany({
-        where: { tableSessionId: sessionId, status: { in: OPEN_ORDER_STATUSES } },
-        select: { id: true, orderNumber: true, status: true },
-      });
-      if (open.length > 0) {
-        throw fail(409, "SESSION_HAS_OPEN_ORDERS", "Complete or cancel this table's open orders first", { orderIds: open.map((o) => o.id), openOrders: open });
-      }
-    }
-    const closed = await tx.tableSession.updateMany({
-      where: { id: sessionId, status: TableSessionStatus.OPEN },
-      data: { status: TableSessionStatus.CLOSED, closedAt: new Date(), closedById: actorId, version: { increment: 1 } },
-    });
-    if (closed.count === 0) {
-      throw sessionNotOpen();
-    }
-    await recordBillEvent(tx, sessionId, { kind: "staff", id: actorId, role: StaffRole.POS_ADMIN }, TableSessionEventType.CLOSED);
-    const cancelledCalls = await cancelOpenCallsInTransaction(tx, sessionId);
-    // A paid bill already made its receipt (createReceipt is a no-op then); a table paid order by order
-    // gets one now if anything was paid.
-    const paidWhere = { status: { not: OrderStatus.CANCELLED }, paymentStatus: PaymentStatus.VERIFIED };
-    const paidOrders = await tx.order.count({ where: { tableSessionId: sessionId, ...paidWhere } });
-    let receiptKey: string | null = null;
-    if (paidOrders > 0) {
-      receiptKey = await createReceipt(tx, sessionId, receiptShares, paidWhere);
-    }
-    return { replay: false as const, diningAreaId: session.diningAreaId, completed, cancelledCalls, receiptKey, hasBill: bill !== null };
-  });
+  const outcome = await prisma.$transaction((tx) => closeSessionInTransaction(tx, sessionId, actorId));
+  await announceClose(sessionId, outcome);
+  return closedAnswer(sessionId);
+}
 
-  if (!outcome.replay) {
-    await announceTableOrdersCompleted(outcome.completed);
-    await emitCallsCancelled(outcome.cancelledCalls);
-    emitToFloor("table-session:updated", { sessionId, diningAreaId: outcome.diningAreaId, status: TableSessionStatus.CLOSED });
-    await emitTableUpdated(outcome.diningAreaId);
-    if (outcome.hasBill) {
-      await emitTableBillUpdated(sessionId);
+type CloseOutcome = Awaited<ReturnType<typeof closeSessionInTransaction>>;
+
+/**
+ * The close (and Settle's last step), inside the caller's transaction: locks the session, settles a PAID bill
+ * into its orders, refuses otherwise unless every order is finished AND paid (table sync R5: an unpaid table
+ * can't close by the no-bill path), ends the session and the tables merged into it, cancels open calls, and
+ * makes the receipt when anything was paid.
+ */
+async function closeSessionInTransaction(tx: Tx, sessionId: string, actorId: string) {
+  const session = await lockSession(tx, sessionId);
+  if (session.status === TableSessionStatus.CLOSED) {
+    return { replay: true as const };
+  }
+  if (session.status !== TableSessionStatus.OPEN) {
+    throw sessionNotOpen();
+  }
+  const merged = await tx.tableSession.findUniqueOrThrow({ where: { id: sessionId }, select: { mergedIntoSessionId: true } });
+  if (merged.mergedIntoSessionId) {
+    throw sessionIsMerged();
+  }
+  const bill = await lockBill(tx, sessionId);
+  if (bill?.status === TableBillStatus.REQUESTED) {
+    throw fail(409, "BILL_NOT_PAID", "This table's bill isn't fully paid yet");
+  }
+  let completed: Awaited<ReturnType<typeof settleTableOrdersInTransaction>> = [];
+  let receiptShares: ShareRow[] = [];
+  if (bill?.status === TableBillStatus.PAID) {
+    const totals = await computeBillTotals(tx, sessionId);
+    if (totals.awaiting) {
+      throw ordersAwaiting();
+    }
+    if (!totals.total.equals(bill.total)) {
+      throw billChanged(bill.version);
+    }
+    receiptShares = liveShares(bill);
+    const allOnline = receiptShares.length > 0 && receiptShares.every((share) => share.method === PaymentMethod.ONLINE);
+    completed = await settleTableOrdersInTransaction(tx, sessionId, { actorId, paymentMethod: allOnline ? PaymentMethod.ONLINE : PaymentMethod.CASH });
+  } else {
+    const open = await tx.order.findMany({
+      where: { tableSessionId: sessionId, status: { in: OPEN_ORDER_STATUSES } },
+      select: { id: true, orderNumber: true, status: true },
+    });
+    if (open.length > 0) {
+      throw fail(409, "SESSION_HAS_OPEN_ORDERS", "Complete or cancel this table's open orders first", { orderIds: open.map((o) => o.id), openOrders: open });
+    }
+    const unpaid = await tx.order.findMany({
+      where: { tableSessionId: sessionId, status: { not: OrderStatus.CANCELLED }, paymentStatus: { not: PaymentStatus.VERIFIED } },
+      select: { id: true, orderNumber: true, totalAmount: true },
+      orderBy: { orderNumber: "asc" },
+    });
+    if (unpaid.length > 0) {
+      const owed = unpaid.reduce((sum, order) => sum.plus(order.totalAmount), D(0));
+      throw fail(
+        409,
+        "SESSION_HAS_UNPAID_ORDERS",
+        `This table still owes Rs ${moneyStr(owed)} (${unpaid.map((order) => `order ${order.orderNumber}`).join(", ")}). Settle the table to close it.`,
+        { orderIds: unpaid.map((order) => order.id), unpaidOrders: unpaid.map((order) => ({ ...order, totalAmount: moneyStr(order.totalAmount) })) },
+      );
     }
   }
+  const closedAt = new Date();
+  const closed = await tx.tableSession.updateMany({
+    where: { id: sessionId, status: TableSessionStatus.OPEN },
+    data: { status: TableSessionStatus.CLOSED, closedAt, closedById: actorId, version: { increment: 1 } },
+  });
+  if (closed.count === 0) {
+    throw sessionNotOpen();
+  }
+  await recordBillEvent(tx, sessionId, { kind: "staff", id: actorId, role: StaffRole.POS_ADMIN }, TableSessionEventType.CLOSED);
+  // Tables merged into this one are given back with it (R7).
+  const children = await tx.tableSession.findMany({
+    where: { mergedIntoSessionId: sessionId, status: TableSessionStatus.OPEN },
+    select: { id: true, diningAreaId: true },
+  });
+  if (children.length > 0) {
+    await tx.tableSession.updateMany({
+      where: { id: { in: children.map((child) => child.id) }, status: TableSessionStatus.OPEN },
+      data: { status: TableSessionStatus.CLOSED, closedAt, closedById: actorId, version: { increment: 1 } },
+    });
+    for (const child of children) {
+      await recordBillEvent(tx, child.id, { kind: "staff", id: actorId, role: StaffRole.POS_ADMIN }, TableSessionEventType.CLOSED, {
+        reason: "Closed with the table it was merged into",
+      });
+    }
+  }
+  const cancelledCalls = await cancelOpenCallsInTransaction(tx, sessionId);
+  // A paid bill already made its receipt (createReceipt is a no-op then); a table paid order by order
+  // gets one now if anything was paid.
+  const paidWhere = { status: { not: OrderStatus.CANCELLED }, paymentStatus: PaymentStatus.VERIFIED };
+  const paidOrders = await tx.order.count({ where: { tableSessionId: sessionId, ...paidWhere } });
+  let receiptKey: string | null = null;
+  if (paidOrders > 0) {
+    receiptKey = await createReceipt(tx, sessionId, receiptShares, paidWhere);
+  }
+  return {
+    replay: false as const,
+    diningAreaId: session.diningAreaId,
+    childSessions: children,
+    completed,
+    cancelledCalls,
+    receiptKey,
+    hasBill: bill !== null,
+  };
+}
+
+async function announceClose(sessionId: string, outcome: CloseOutcome) {
+  if (outcome.replay) {
+    return;
+  }
+  await announceTableOrdersCompleted(outcome.completed);
+  await emitCallsCancelled(outcome.cancelledCalls);
+  await emitSessionUpdated(sessionId);
+  for (const child of outcome.childSessions) {
+    await emitSessionUpdated(child.id);
+  }
+  await emitTablesUpdated([outcome.diningAreaId, ...outcome.childSessions.map((child) => child.diningAreaId)]);
+  if (outcome.hasBill) {
+    await emitTableBillUpdated(sessionId);
+  }
+}
+
+async function closedAnswer(sessionId: string) {
   const session = await prisma.tableSession.findUniqueOrThrow({
     where: { id: sessionId },
     select: { id: true, diningAreaId: true, status: true, closedAt: true, receipt: { select: { receiptKey: true } } },
   });
   const { receipt, ...rest } = session;
   return { session: rest, receiptKey: receipt?.receiptKey ?? null };
+}
+
+// ================= Ending the business day (table sync R6) =================
+
+/**
+ * Whether a session can close by itself when the day is forced to end: nothing open, nothing unpaid, and no
+ * bill in the middle of being paid. Everything else is left OPEN (it reads PREVIOUS_DAY on the floor map).
+ */
+export async function isIdleForDayEnd(db: Tx | typeof prisma, sessionId: string): Promise<boolean> {
+  const [open, unpaid, bill] = await Promise.all([
+    db.order.count({ where: { tableSessionId: sessionId, status: { in: OPEN_ORDER_STATUSES } } }),
+    db.order.count({ where: { tableSessionId: sessionId, status: { not: OrderStatus.CANCELLED }, paymentStatus: { not: PaymentStatus.VERIFIED } } }),
+    db.tableBill.findUnique({ where: { sessionId }, select: { status: true } }),
+  ]);
+  return open === 0 && unpaid === 0 && bill?.status !== TableBillStatus.REQUESTED;
+}
+
+/**
+ * Inside the day-end transaction (force): closes every idle session of the day (DAY_END_CLOSED, receipt when
+ * anything was paid) and returns what was closed and what was left open. Emits come from announceDayEndCloses.
+ */
+export async function closeIdleSessionsForDayEnd(tx: Tx, businessDayId: string, actorId: string) {
+  const sessions = await tx.tableSession.findMany({
+    where: { businessDayId, status: TableSessionStatus.OPEN, mergedIntoSessionId: null },
+    select: { id: true, diningArea: { select: { name: true } } },
+    orderBy: { seatedAt: "asc" },
+  });
+  const closed: { sessionId: string; tableName: string; outcome: CloseOutcome }[] = [];
+  const leftOpen: { sessionId: string; tableName: string }[] = [];
+  for (const session of sessions) {
+    if (!(await isIdleForDayEnd(tx, session.id))) {
+      leftOpen.push({ sessionId: session.id, tableName: session.diningArea.name });
+      continue;
+    }
+    const outcome = await closeSessionInTransaction(tx, session.id, actorId);
+    await recordBillEvent(tx, session.id, { kind: "staff", id: actorId, role: StaffRole.POS_ADMIN }, TableSessionEventType.DAY_END_CLOSED);
+    closed.push({ sessionId: session.id, tableName: session.diningArea.name, outcome });
+  }
+  return { closed, leftOpen };
+}
+
+export async function announceDayEndCloses(closed: { sessionId: string; outcome: CloseOutcome }[]) {
+  for (const entry of closed) {
+    await announceClose(entry.sessionId, entry.outcome);
+  }
+}
+
+// ================= Settle & close / collect the rest (table sync R4) =================
+
+export interface SettleInput {
+  method: PaymentMethod;
+  paidAmount: Decimal | null;
+  discount: Decimal | undefined;
+  discountReason: string | null;
+  expectedBillVersion: number | undefined;
+}
+
+const COUNTER_SHARE_LABEL = "Paid at the counter";
+
+/**
+ * The counter's one-step payment for a whole table (SA, PA; an ORDER_TAKER only at their own table, cash, no
+ * discount): requests the bill if needed, applies a discount with the usual cap and reason, replaces the split
+ * with one share for the total paid at the counter, marks the bill PAID (receipt), then closes the table — all
+ * in one transaction under the session lock, so a guest's own payment and this can't both settle the orders.
+ * Refused while a guest's share has money on it (check those first, or collect the rest) or an order waits at
+ * reception. A repeat on a closed table answers the same result.
+ */
+export async function settleTable(sessionId: string, actor: Extract<BillActor, { kind: "staff" }>, input: SettleInput) {
+  if (actor.role === StaffRole.ORDER_TAKER && (input.method !== PaymentMethod.CASH || input.discount !== undefined)) {
+    throw fail(403, "FORBIDDEN", "An order taker can settle a table in cash only, without a discount");
+  }
+  let change: Decimal | null = null;
+  let outcome: CloseOutcome;
+  try {
+    outcome = await prisma.$transaction(async (tx) => {
+      const session = await lockSession(tx, sessionId);
+      if (session.status === TableSessionStatus.CLOSED) {
+        return { replay: true as const };
+      }
+      if (session.status !== TableSessionStatus.OPEN) {
+        throw sessionNotOpen();
+      }
+      const merged = await tx.tableSession.findUniqueOrThrow({ where: { id: sessionId }, select: { mergedIntoSessionId: true } });
+      if (merged.mergedIntoSessionId) {
+        throw sessionIsMerged();
+      }
+      if (actor.role === StaffRole.ORDER_TAKER && session.waiterStaffId !== actor.id) {
+        throw fail(403, "NOT_YOUR_TABLE", "Only this table's waiter or an admin can take its payment");
+      }
+      await syncTableBill(tx, sessionId, actor.id);
+      let bill = await lockBill(tx, sessionId);
+      if (bill && input.expectedBillVersion !== undefined && bill.version !== input.expectedBillVersion) {
+        throw billChanged(bill.version);
+      }
+      if (bill?.status !== TableBillStatus.PAID) {
+        let totals = await computeBillTotals(tx, sessionId);
+        if (totals.orders.length === 0) {
+          throw fail(409, "NOTHING_TO_SETTLE", "There's nothing left to pay at this table.");
+        }
+        if (totals.awaiting) {
+          throw ordersAwaiting();
+        }
+        if (bill && hasMoney(liveShares(bill))) {
+          throw fail(
+            409,
+            "SPLIT_HAS_PAYMENTS",
+            "Some guests have already paid their share. Check those payments, then collect the rest instead.",
+          );
+        }
+        const requested = { status: TableBillStatus.REQUESTED, requestedByStaffId: actor.id, requestedAt: new Date() };
+        if (!bill) {
+          await tx.tableBill.create({ data: { sessionId, ...requested, subtotal: totals.subtotal, discount: totals.discount, total: totals.total } });
+          await recordBillEvent(tx, sessionId, actor, TableSessionEventType.BILL_REQUESTED, { after: { total: moneyStr(totals.total), via: "settle" } });
+        } else if (bill.status !== TableBillStatus.REQUESTED) {
+          await bumpBill(tx, bill, requested);
+          await recordBillEvent(tx, sessionId, actor, TableSessionEventType.BILL_REQUESTED, { after: { total: moneyStr(totals.total), via: "settle" } });
+        }
+        bill = (await lockBill(tx, sessionId)) as BillRow;
+        if (input.discount !== undefined && (await applyBillDiscount(tx, bill, totals, actor, input.discount, input.discountReason))) {
+          bill = (await lockBill(tx, sessionId)) as BillRow;
+          totals = await computeBillTotals(tx, sessionId);
+        }
+        if (input.paidAmount !== null && (input.paidAmount.lessThan(totals.total) || input.paidAmount.decimalPlaces() > 2)) {
+          throw fail(400, "PAID_AMOUNT_TOO_LOW", `Cash received must be at least Rs ${moneyStr(totals.total)}.`);
+        }
+        change = input.paidAmount ? input.paidAmount.minus(totals.total) : null;
+        // One share for the whole table, paid at the counter.
+        const live = liveShares(bill);
+        if (live.length > 0) {
+          await tx.tableBillShare.updateMany({ where: { id: { in: live.map((share) => share.id) } }, data: { status: TableShareStatus.VOID } });
+        }
+        const splitVersion = bill.splitVersion + 1;
+        await tx.tableBillShare.create({
+          data: {
+            billId: bill.id,
+            splitVersion,
+            position: 1,
+            label: COUNTER_SHARE_LABEL,
+            amount: totals.total,
+            status: TableShareStatus.VERIFIED,
+            method: input.method,
+            paidAmount: input.paidAmount,
+            verifiedById: actor.id,
+            verifiedAt: new Date(),
+          },
+        });
+        await bumpBill(tx, bill, { splitMode: SplitMode.CUSTOM, splitVersion, subtotal: totals.subtotal, discount: totals.discount, total: totals.total });
+        await recordBillEvent(tx, sessionId, actor, TableSessionEventType.SPLIT_SET, {
+          reason: COUNTER_SHARE_LABEL,
+          after: { mode: SplitMode.CUSTOM, splitVersion, shares: [moneyStr(totals.total)] },
+        });
+        await recordBillEvent(tx, sessionId, actor, TableSessionEventType.SHARE_PAID, {
+          after: { share: 1, amount: moneyStr(totals.total), method: input.method, ...(input.paidAmount ? { paidAmount: moneyStr(input.paidAmount) } : {}) },
+        });
+        await markPaidIfComplete(tx, (await lockBill(tx, sessionId)) as BillRow, actor);
+      }
+      const closed = await closeSessionInTransaction(tx, sessionId, actor.id);
+      await recordBillEvent(tx, sessionId, actor, TableSessionEventType.SETTLED, {
+        after: { method: input.method, ...(change ? { change: moneyStr(change) } : {}) },
+      });
+      return closed;
+    });
+  } catch (error) {
+    rethrowMath(error);
+  }
+  await announceClose(sessionId, outcome);
+  return { ...(await closedAnswer(sessionId)), change: change ? moneyStr(change) : null };
+}
+
+/**
+ * Every unpaid share of the current split collected in cash at once (SA, PA; an ORDER_TAKER at their own
+ * table): for a table where some guests paid online and the rest pay the counter. Refused while a proof waits
+ * to be checked (PROOFS_TO_CHECK). The bill becomes PAID; staff then close the table.
+ */
+export function collectRemainingCash(sessionId: string, actor: Extract<BillActor, { kind: "staff" }>, expectedVersion: number) {
+  return writeBill(actor, sessionId, async (tx) => {
+    const { session, bill, totals } = await openBillForWrite(tx, sessionId, actor, { requireRequested: false });
+    if (actor.role === StaffRole.ORDER_TAKER && session.waiterStaffId !== actor.id) {
+      throw fail(403, "NOT_YOUR_TABLE", "Only this table's waiter or an admin can take its cash");
+    }
+    if (!bill || bill.status === TableBillStatus.UNLOCKED) {
+      throw notRequested();
+    }
+    const live = liveShares(bill);
+    const toCollect = live.filter((share) => share.status === TableShareStatus.UNPAID || share.status === TableShareStatus.REJECTED);
+    if (checkVersion(bill, expectedVersion, bill.status === TableBillStatus.PAID || (live.length > 0 && toCollect.length === 0)) === "replay") {
+      return { changed: false, diningAreaId: session.diningAreaId };
+    }
+    if (live.length === 0) {
+      throw fail(409, "NO_SPLIT", "This bill isn't split yet. Use Settle to take the whole amount.");
+    }
+    if (live.some((share) => share.status === TableShareStatus.PROOF_SUBMITTED)) {
+      throw fail(409, "PROOFS_TO_CHECK", "Some guests uploaded payment proofs. Check them before collecting the rest.");
+    }
+    if (totals.awaiting) {
+      throw ordersAwaiting();
+    }
+    for (const share of toCollect) {
+      const updated = await tx.tableBillShare.updateMany({
+        where: { id: share.id, status: share.status },
+        data: { status: TableShareStatus.VERIFIED, method: PaymentMethod.CASH, verifiedById: actor.id, verifiedAt: new Date(), rejectedReason: null },
+      });
+      if (updated.count === 0) {
+        throw billChanged(bill.version);
+      }
+      await recordBillEvent(tx, sessionId, actor, TableSessionEventType.SHARE_PAID, {
+        after: { share: share.position, amount: moneyStr(share.amount), via: "collect_cash" },
+      });
+    }
+    await markPaidIfComplete(tx, bill, actor);
+    await bumpBill(tx, bill);
+    return { changed: true, diningAreaId: session.diningAreaId };
+  });
+}
+
+// ================= The running bill on paper (table sync R13) =================
+
+/** The table's bill before payment, as the receipt snapshot shapes it (no shares): every non-cancelled order. */
+export async function runningBillSnapshot(sessionId: string, actor: Extract<BillActor, { kind: "staff" }>) {
+  return prisma.$transaction(async (tx) => {
+    const session = await tx.tableSession.findUnique({ where: { id: sessionId }, select: { waiterStaffId: true, status: true } });
+    if (!session) {
+      throw sessionNotFound();
+    }
+    if (actor.role === StaffRole.ORDER_TAKER && session.waiterStaffId !== actor.id) {
+      throw fail(403, "NOT_YOUR_TABLE", "Only this table's waiter or an admin can print its bill");
+    }
+    const { snapshot } = await buildReceiptSnapshot(tx, sessionId, [], { tableSessionId: sessionId, status: { not: OrderStatus.CANCELLED } });
+    if (snapshot.orders.length === 0) {
+      throw fail(409, "NOTHING_TO_BILL", "There is nothing to pay for at this table yet");
+    }
+    return snapshot;
+  });
 }
 
 /** Writes the session's one receipt with a new long random link; a no-op when it already has one. */
