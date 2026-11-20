@@ -20,7 +20,7 @@ export function Field({
   children: ReactNode
 }) {
   return (
-    <div className="space-y-1">
+    <div data-field className="space-y-1">
       <label htmlFor={id} className="block font-bold text-ink">
         {label}
       </label>

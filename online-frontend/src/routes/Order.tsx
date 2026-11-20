@@ -4,7 +4,7 @@ import { useOrderStatus } from '../api/orders'
 import { useStore } from '../api/store'
 import { ErrorState } from '../components/ErrorState'
 import { Icon } from '../components/Icon'
-import { PaymentBlock } from '../components/order/PaymentBlock'
+import { OrderPayment } from '../components/order/OrderPayment'
 import { StatusTimeline } from '../components/order/StatusTimeline'
 import { Card } from '../components/ui/Card'
 import { ButtonRoute } from '../components/ui/Button'
@@ -79,7 +79,7 @@ export default function Order() {
       )}
 
       {!cancelled && order.payment.method === 'CASH' && <CashNote order={order} />}
-      {!cancelled && order.payment.method === 'ONLINE' && <PaymentBlock order={order} store={store.data} />}
+      {!cancelled && order.payment.method === 'ONLINE' && <OrderPayment order={order} publicId={publicId} store={store.data} />}
 
       <Receipt order={order} />
 

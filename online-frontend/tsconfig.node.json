@@ -15,5 +15,5 @@
     "strict": true,
     "erasableSyntaxOnly": true
   },
-  "include": ["vite.config.ts", "site.config.json"]
+  "include": ["vite.config.ts", "site.config.json", "src/lib/*.test.ts"]
 }

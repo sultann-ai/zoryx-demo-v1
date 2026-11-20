@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { queryClient } from '../lib/queryClient'
-import { ApiError, apiFetch, apiResponse } from './client'
+import { ApiError, apiFetch, apiResponse, uploadForm, type UploadOptions } from './client'
 import type { Deal } from './deals'
 import type { PublicMenu } from './menu'
 import type { MenuSource } from './menuSource'
@@ -362,10 +362,10 @@ export const payShare = (token: string, shareId: string, method: 'CASH' | 'ONLIN
   billCall<BillAnswer & { paymentAccounts: PaymentAccount[] | null }>(token, `/bill/shares/${encodeURIComponent(shareId)}/pay`, json({ method }))
 
 /** One screenshot (JPEG/PNG/WebP, up to 5 MB) for the guest's own share; a new one replaces the last. */
-export async function uploadShareProof(token: string, shareId: string, file: File): Promise<void> {
+export async function uploadShareProof(token: string, shareId: string, file: File, options?: UploadOptions): Promise<void> {
   const body = new FormData()
   body.append('file', file)
-  await apiFetch(`${BASE}/bill/shares/${encodeURIComponent(shareId)}/payment-proof`, guest(token, { method: 'POST', body }))
+  await uploadForm(`${BASE}/bill/shares/${encodeURIComponent(shareId)}/payment-proof`, body, options, { 'X-Table-Token': token })
   void refreshSession(token)
 }
 

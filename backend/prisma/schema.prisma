@@ -599,6 +599,10 @@ model Order {
   paymentScreenshotUrl String?
   // The customer's payment screenshot, stored as a PAYMENT_PROOF media asset (in Postgres).
   paymentProofMediaId  String?
+  // When the current proof was uploaded (null until one is, and for proofs from before this column existed).
+  paymentProofAt       DateTime?
+  // Why staff turned the payment down (<= 200 chars, shown to the customer); cleared by a new proof.
+  paymentRejectedReason String? @db.VarChar(200)
   paymentProofMedia    MediaAsset?      @relation("OrderPaymentProof", fields: [paymentProofMediaId], references: [id], onDelete: SetNull)
   paymentVerifiedById  String?
   paymentVerifiedBy    StaffUser?       @relation("PaymentVerifiedBy", fields: [paymentVerifiedById], references: [id])

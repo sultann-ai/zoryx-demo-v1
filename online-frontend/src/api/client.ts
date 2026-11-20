@@ -57,6 +57,52 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   return (await response.json()) as T
 }
 
+/** Longer than a normal request: a phone photo on a weak connection takes a while to go up. */
+const UPLOAD_TIMEOUT_MS = 60_000
+
+export interface UploadOptions {
+  /** 0..1 as the bytes go out. */
+  onProgress?: (fraction: number) => void
+  /** Abort to cancel; the promise then rejects with a DOMException named AbortError. */
+  signal?: AbortSignal
+}
+
+/**
+ * POST a form with upload progress and cancel (fetch has neither). Same errors as apiFetch: a network failure or a
+ * time-out is ApiError(0); any other non-2xx is the server's { error, code } as an ApiError.
+ */
+export function uploadForm<T>(path: string, body: FormData, { onProgress, signal }: UploadOptions = {}, headers: Record<string, string> = {}): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (signal?.aborted) return reject(new DOMException('Aborted', 'AbortError'))
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', apiUrl(path))
+    xhr.timeout = UPLOAD_TIMEOUT_MS
+    xhr.setRequestHeader('Accept', 'application/json')
+    for (const [name, value] of Object.entries(headers)) xhr.setRequestHeader(name, value)
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) onProgress?.(event.loaded / event.total)
+    }
+    xhr.onload = () => {
+      let parsed: unknown = null
+      try {
+        parsed = JSON.parse(xhr.responseText)
+      } catch {
+        /* not JSON */
+      }
+      if (xhr.status >= 200 && xhr.status < 300) return resolve(parsed as T)
+      const failure = parsed as { error?: string; code?: string } | null
+      reject(new ApiError(xhr.status, failure?.error ?? xhr.statusText, failure?.code, { ...failure }))
+    }
+    xhr.onerror = () => reject(new ApiError(0, 'Network error'))
+    xhr.ontimeout = () => reject(new ApiError(0, 'Network error'))
+    signal?.addEventListener('abort', () => {
+      xhr.abort()
+      reject(new DOMException('Aborted', 'AbortError'))
+    })
+    xhr.send(body)
+  })
+}
+
 /** Plain-language message for whatever went wrong; always ends in something the person can do. */
 export function friendlyErrorKey(error: unknown): TranslationKey {
   if (!(error instanceof ApiError)) return 'err.generic'

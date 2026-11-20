@@ -9,6 +9,7 @@ const db = vi.hoisted(() => ({
   calls: 0,
   order: null as unknown,
   existingOrder: null as unknown,
+  updates: [] as Record<string, unknown>[],
 }));
 
 vi.mock("../config/prisma", () => {
@@ -25,13 +26,17 @@ vi.mock("../config/prisma", () => {
   const stub: Record<string, unknown> = {
     order: model({
       findUnique: touch(() => db.order),
-      update: touch(() => ({})),
+      update: async (args: { data: Record<string, unknown> }) => {
+        db.calls += 1;
+        db.updates.push(args.data);
+        return {};
+      },
       count: touch(() => 0),
     }),
     mediaAsset: model({ create: touch(() => ({ id: "proof-asset" })), deleteMany: touch(() => ({ count: 1 })) }),
     $transaction: async (fn: (tx: unknown) => unknown) => fn(stub),
   };
-  for (const name of ["menuItem", "deal", "galleryImage", "paymentAccount"]) {
+  for (const name of ["menuItem", "deal", "category", "galleryImage", "paymentAccount", "tableBillShare"]) {
     stub[name] = model({ count: touch(() => 0) });
   }
   return { prisma: new Proxy(stub, { get: (target, property) => (property in target ? target[property as string] : model()) }) };
@@ -68,6 +73,7 @@ beforeAll(async () => {
 beforeEach(() => {
   db.calls = 0;
   db.order = null;
+  db.updates = [];
 });
 
 // Each call gets its own client IP so the in-memory limiters don't interfere with one another.
@@ -228,7 +234,6 @@ describe("POST /api/online/orders/:publicId/payment-proof", () => {
     for (const wrong of [
       { paymentMethod: "CASH" },
       { paymentStatus: "VERIFIED" },
-      { paymentStatus: "REJECTED" },
       { status: "CANCELLED" },
       { status: "COMPLETED" },
     ]) {
@@ -239,11 +244,49 @@ describe("POST /api/online/orders/:publicId/payment-proof", () => {
     }
   });
 
+  it("takes a new proof for a payment staff turned down, and puts it back in the queue", async () => {
+    db.order = { id: "o1", orderNumber: 3, status: "AWAITING_RECEPTION", paymentMethod: "ONLINE", paymentStatus: "REJECTED", paymentProofMediaId: "old-proof" };
+    const response = await uploadProof(VALID_ID, { data: await png(), type: "image/png", name: "again.png" });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ paymentState: "PROOF_RECEIVED" });
+    expect(db.updates.at(-1)).toMatchObject({ paymentStatus: "AWAITING_VERIFICATION", paymentRejectedReason: null, paymentProofMediaId: "proof-asset" });
+    expect(db.updates.at(-1)?.paymentProofAt).toBeInstanceOf(Date);
+  });
+
   it("stores the proof and reports PROOF_RECEIVED for an ONLINE order awaiting verification", async () => {
     db.order = { id: "o1", orderNumber: 3, status: "AWAITING_RECEPTION", paymentMethod: "ONLINE", paymentStatus: "AWAITING_VERIFICATION", paymentProofMediaId: null };
     const response = await uploadProof(VALID_ID, { data: await png(), type: "image/png", name: "screenshot.png" });
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ paymentState: "PROOF_RECEIVED" });
     expect(db.calls).toBeGreaterThan(0);
+  });
+});
+
+describe("GET /api/online/orders/:publicId/payment-proof", () => {
+  const get = (id: string, query = "?size=thumb") =>
+    fetch(`${baseUrl}/api/online/orders/${id}/payment-proof${query}`, { headers: { "X-Forwarded-For": `10.3.0.${ipCounter++}` } });
+
+  it("404s a malformed link without touching the database, and only ever serves the thumbnail", async () => {
+    expect((await get("bad")).status).toBe(404);
+    expect(db.calls).toBe(0);
+    const full = await get(VALID_ID, "?size=full");
+    expect(full.status).toBe(400);
+    expect((await get(VALID_ID, "")).status).toBe(400);
+  });
+
+  it("404s when the order has no proof yet", async () => {
+    db.order = { paymentProofMediaId: null };
+    expect((await get(VALID_ID)).status).toBe(404);
+  });
+});
+
+describe("PATCH /api/online/payment/:orderId/reject", () => {
+  it("is staff-only (no token, no way in)", async () => {
+    const response = await fetch(`${baseUrl}/api/online/payment/o1/reject`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason: "x" }),
+    });
+    expect([401, 403]).toContain(response.status);
   });
 });

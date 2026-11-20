@@ -250,8 +250,15 @@ export async function verifyPayment(req: Request, res: Response) {
 }
 
 export async function rejectPayment(req: Request, res: Response) {
+  // Optional body { reason } (1-200 chars once trimmed); the customer sees it on their status page.
+  const rawReason = (req.body as { reason?: unknown } | undefined)?.reason;
+  if (rawReason !== undefined && rawReason !== null && (typeof rawReason !== "string" || rawReason.trim().length > 200)) {
+    res.status(400).json({ error: "reason must be a string of at most 200 characters" });
+    return;
+  }
+  const reason = typeof rawReason === "string" && rawReason.trim().length > 0 ? rawReason.trim() : undefined;
   try {
-    const order = await paymentService.rejectPayment(req.params.orderId as string);
+    const order = await paymentService.rejectPayment(req.params.orderId as string, reason);
     res.json(order);
   } catch (error) {
     if (error instanceof paymentService.OrderNotFoundError) {

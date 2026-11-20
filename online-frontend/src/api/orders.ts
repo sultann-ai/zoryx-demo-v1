@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
-import { ApiError, apiFetch } from './client'
+import { orderPollMs } from '../lib/paymentProofState'
+import { ApiError, apiFetch, apiUrl, uploadForm, type UploadOptions } from './client'
 
 // POST /api/online/guest-orders — shapes from backend/src/modules/guestOrder.
 export type OrderType = 'DELIVERY' | 'PICKUP'
@@ -60,12 +61,19 @@ export function createGuestOrder(body: GuestOrderBody): Promise<GuestOrderResult
   })
 }
 
-/** POST /api/online/orders/:publicId/payment-proof: one image (JPEG/PNG/WebP, up to 5 MB) for an ONLINE order still waiting for payment. */
-export function uploadPaymentProof(publicId: string, file: File): Promise<{ paymentState: PaymentState }> {
+/**
+ * POST /api/online/orders/:publicId/payment-proof: one image (JPEG/PNG/WebP, up to 5 MB) for an ONLINE order that is
+ * waiting for payment, or whose payment staff turned down (a new proof puts it back in the queue). Progress and cancel.
+ */
+export function uploadPaymentProof(publicId: string, file: File, options?: UploadOptions): Promise<{ paymentState: PaymentState }> {
   const body = new FormData()
   body.append('file', file)
-  return apiFetch<{ paymentState: PaymentState }>(`/api/online/orders/${encodeURIComponent(publicId)}/payment-proof`, { method: 'POST', body })
+  return uploadForm<{ paymentState: PaymentState }>(`/api/online/orders/${encodeURIComponent(publicId)}/payment-proof`, body, options)
 }
+
+/** The customer's own proof as a small thumbnail (GET .../payment-proof?size=thumb); `sentAt` busts the cache when it is replaced. */
+export const paymentProofThumbUrl = (publicId: string, sentAt: string): string =>
+  apiUrl(`/api/online/orders/${encodeURIComponent(publicId)}/payment-proof?size=thumb&v=${encodeURIComponent(sentAt)}`)
 
 // GET /api/online/orders/:publicId — never includes phone, address or notes.
 export type CustomerStatus = 'RECEIVED' | 'CONFIRMED' | 'PREPARING' | 'READY' | 'ON_THE_WAY' | 'DELIVERED' | 'CANCELLED'
@@ -101,7 +109,14 @@ export interface OrderStatus {
   pickup?: PickupShop
   status: CustomerStatus
   cancelReason: string | null
-  payment: { method: 'CASH' | 'ONLINE'; state: PaymentState }
+  payment: {
+    method: 'CASH' | 'ONLINE'
+    state: PaymentState
+    /** When the current proof reached us (ISO), or null: none yet / sent before the server recorded it. */
+    proofSentAt: string | null
+    /** Why reception turned the payment down (state PAYMENT_PROBLEM), when they said. */
+    rejectReason: string | null
+  }
   lines: OrderLine[]
   subtotal: string
   discount: string
@@ -112,9 +127,11 @@ export interface OrderStatus {
 
 export const isFinalStatus = (status: CustomerStatus): boolean => status === 'DELIVERED' || status === 'CANCELLED'
 
-const POLL_MS = 20_000
+// While the counter is checking a proof the page looks every 5 s for the first minute (this device's minute: reopening the
+// link starts a new one), then every 20 s, as for any open order. See lib/paymentProofState.ts.
+const waitingSince = new Map<string, number>()
 
-/** Polls every 20s while the tab is visible and the order is still open; stops on Delivered / Cancelled. */
+/** Polls while the tab is visible and the order is still open; stops on Delivered / Cancelled. */
 export function useOrderStatus(publicId: string) {
   return useQuery({
     queryKey: ['order', publicId],
@@ -124,8 +141,16 @@ export function useOrderStatus(publicId: string) {
     retry: (failures, error) => !(error instanceof ApiError && error.status === 404) && failures < 2,
     refetchInterval: (query) => {
       const data = query.state.data
-      if (data && isFinalStatus(data.status)) return false
-      return document.visibilityState === 'visible' ? POLL_MS : false
+      const paymentState = data?.payment.state ?? null
+      if (paymentState === 'PROOF_RECEIVED') {
+        if (!waitingSince.has(publicId)) waitingSince.set(publicId, Date.now())
+      } else waitingSince.delete(publicId)
+      return orderPollMs({
+        final: !!data && isFinalStatus(data.status),
+        visible: document.visibilityState === 'visible',
+        paymentState,
+        waitingForMs: Date.now() - (waitingSince.get(publicId) ?? Date.now()),
+      })
     },
   })
 }

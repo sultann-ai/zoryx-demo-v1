@@ -13,7 +13,8 @@ export function useTyping(): boolean {
   const [typing, setTyping] = useState(false)
   useEffect(() => {
     const reveal = (el: Element | null) => {
-      if (!isTypingField(el)) return
+      // A field inside a sheet is kept in view by the sheet itself, which also counts the field's hint and error.
+      if (!isTypingField(el) || (el as HTMLElement).closest('dialog')) return
       const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches
       ;(el as HTMLElement).scrollIntoView({ block: 'center', behavior: reduce ? 'auto' : 'smooth' })
     }

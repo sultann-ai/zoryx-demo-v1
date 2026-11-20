@@ -8,6 +8,7 @@ import { Header } from './Header'
 import { OfflineBanner } from './OfflineBanner'
 import { PageSkeleton } from './Skeleton'
 import { Splash } from './mobile/AppState'
+import { PageToasts } from './mobile/ToastHost'
 import { WhatsAppButton } from './WhatsAppButton'
 
 // Below 768px the website header/footer are replaced by the app shell (app bar + tab bar); its code loads only there.
@@ -51,6 +52,7 @@ function DesktopShell() {
       </main>
       <Footer />
       <WhatsAppButton />
+      <PageToasts />
     </div>
   )
 }

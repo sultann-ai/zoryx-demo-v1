@@ -16,6 +16,8 @@ export interface SourcePublicOrder {
   paymentMethod: PaymentMethod;
   paymentStatus: PaymentStatus;
   paymentProofMediaId: string | null;
+  paymentProofAt: Date | null;
+  paymentRejectedReason: string | null;
   cancelledReason: string | null;
   discount: MoneyLike;
   deliveryFee: MoneyLike;
@@ -121,7 +123,15 @@ export function toPublicOrderStatus(source: SourcePublicOrder, pickupShop?: Pick
     status,
     // The staff reason for a cancellation or rejection (free text typed by reception).
     cancelReason: status === "CANCELLED" ? source.cancelledReason : null,
-    payment: { method: source.paymentMethod, state: paymentState },
+    payment: {
+      method: source.paymentMethod,
+      state: paymentState,
+      // When the customer's current proof reached us (null when there is none, or it predates the column): the status
+      // page shows "sent at ..." from this. A proof is never exposed here, only its time (the picture has its own route).
+      proofSentAt: source.paymentProofMediaId !== null && source.paymentProofAt ? source.paymentProofAt.toISOString() : null,
+      // Staff's reason when they turned the payment down (free text typed by reception, like cancelReason above).
+      rejectReason: paymentState === "PAYMENT_PROBLEM" ? source.paymentRejectedReason : null,
+    },
     lines: [...itemLines, ...dealLines],
     subtotal: subtotal.toString(),
     discount: String(source.discount),

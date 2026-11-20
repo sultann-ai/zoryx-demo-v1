@@ -17,3 +17,5 @@ publicOrderRouter.post(
   proofUpload.single("file"),
   guestOrderController.uploadPaymentProof,
 );
+// The customer's own proof, as a thumbnail only (the full image is staff-only).
+publicOrderRouter.get("/:publicId/payment-proof", orderStatusLimiter, guestOrderController.getPaymentProofThumb);

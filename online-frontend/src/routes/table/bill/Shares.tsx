@@ -2,16 +2,20 @@ import { useState } from 'react'
 import { ApiError } from '../../../api/client'
 import type { PaymentAccount } from '../../../api/store'
 import { useStore } from '../../../api/store'
-import { claimShare, payShare, uploadShareProof, type BillShare, type TableBill } from '../../../api/table'
+import { claimShare, payShare, raiseCall, uploadShareProof, type BillShare, type TableBill } from '../../../api/table'
 import { Fill } from '../../../components/Fill'
 import { Icon, type IconName } from '../../../components/Icon'
-import { ProofUpload } from '../../../components/mobile/orders/PaymentSteps'
+import { ProofUpload } from '../../../components/payment/ProofUpload'
+import { WAITER_NOTE } from '../../../components/payment/ProofUploadPanel'
 import { AccountCard } from '../../../components/order/PaymentBlock'
 import { Button } from '../../../components/ui/Button'
 import { Card } from '../../../components/ui/Card'
+import { waHref } from '../../../lib/config'
 import { formatRs } from '../../../lib/format'
 import { vibrate } from '../../../lib/haptics'
 import { showToast } from '../../../lib/toast'
+import { useShopWhatsApp } from '../../../lib/useShopContact'
+import { uuid } from '../../../lib/uuid'
 import { useT, type TranslationKey } from '../../../i18n'
 import { endsSession, useTable } from '../TableContext'
 import { tableErrorText } from '../tableErrors'
@@ -115,6 +119,10 @@ function MyShareCard({ share, bill, blocked }: { share: BillShare; bill: TableBi
   const paying = share.status === 'UNPAID' || share.status === 'REJECTED' || share.status === 'PROOF_SUBMITTED'
   const online = share.method === 'ONLINE' || accounts !== null
   const shownAccounts = accounts ?? store.data?.paymentAccounts ?? []
+  const shopWhatsapp = useShopWhatsApp()
+  const whatsappNumber = store.data?.settings.whatsappNumber?.trim() || shopWhatsapp
+  const waMessage = t('order.pay.waMsg').replace('{code}', table.poll.table.name).replace('{amount}', amount)
+  const whatsappHref = whatsappNumber ? `${waHref(whatsappNumber)}?text=${encodeURIComponent(waMessage)}` : null
 
   const pay = async (method: 'CASH' | 'ONLINE') => {
     setBusy(method)
@@ -214,7 +222,15 @@ function MyShareCard({ share, bill, blocked }: { share: BillShare; bill: TableBi
             <p>{t('bill.pay.noAccounts')}</p>
           )}
           <p className="text-lg font-bold">{share.status === 'PROOF_SUBMITTED' ? t('bill.pay.replace') : t('bill.pay.step2')}</p>
-          <ProofUpload upload={(file) => uploadShareProof(table.token, share.id, file)} onDone={table.refresh} />
+          <ProofUpload
+            upload={(file, options) => uploadShareProof(table.token, share.id, file, options)}
+            onDone={table.refresh}
+            whatsappHref={whatsappHref}
+            callWaiter={async () => {
+              await raiseCall(table.token, { clientRequestId: uuid(), type: 'OTHER', note: WAITER_NOTE })
+              table.refresh()
+            }}
+          />
           {share.status !== 'PROOF_SUBMITTED' && (
             <Button variant="ghost" className="w-full text-ink" disabled={blocked || busy !== null} onClick={() => void pay('CASH')}>
               <Icon name="cash" />
