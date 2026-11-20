@@ -1,9 +1,17 @@
+import { useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
 import { diningAreasApi } from "../api/diningAreas";
-import type { FloorPlan, FloorTable, LayoutEntry, QrSheetTable, SeatResult, StaffTableCall } from "../api/tables";
+import type { FloorPlan, FloorTable, LayoutEntry, QrSheetTable, SeatResult, SettleTableInput, StaffTableCall } from "../api/tables";
 import {
   acknowledgeTableCall,
   closeTableSession,
+  mergeTableSession,
+  moveOrderToTable,
+  moveTableSession,
+  printTableBill,
+  settleTableSession,
+  voidTableSession,
   fetchOpenTableCalls,
   fetchQrSheet,
   fetchFloorPlan,
@@ -35,6 +43,86 @@ export function useFloorPlan() {
     queryFn: fetchFloorPlan,
     placeholderData: (previous) => previous,
   });
+}
+
+// The floor map by table id — what the New Order and order-taker pickers read each table's state from.
+// Same query (and so the same socket-driven refresh) as the Tables page.
+export function useFloorById(enabled = true): Map<string, FloorTable> | undefined {
+  const { data } = useQuery({
+    queryKey: FLOOR_QUERY_KEY,
+    queryFn: fetchFloorPlan,
+    placeholderData: (previous) => previous,
+    enabled,
+  });
+  return useMemo(() => (data ? new Map(data.tables.map((table) => [table.id, table])) : undefined), [data]);
+}
+
+// Everything a table change can move: the map, the sessions, the calls, and the order pages/lists.
+export function invalidateTableViews(queryClient: QueryClient) {
+  queryClient.invalidateQueries({ queryKey: FLOOR_QUERY_KEY });
+  queryClient.invalidateQueries({ queryKey: TABLE_SESSION_QUERY_KEY });
+  queryClient.invalidateQueries({ queryKey: ["orders"] });
+}
+
+interface PlacedTableOrder {
+  status: string;
+  totalAmount: string;
+  diningAreaId: string | null;
+  tableSessionId?: string | null;
+  tableOpened?: { sessionId: string; pin: string | null } | null;
+}
+
+/**
+ * Right after an order lands on a table, the map shows the table taken (table sync): the tile is patched in
+ * the cache at once, then refetched — the server's table:updated (socket) refetches it again. Nothing here
+ * decides anything; it only avoids a "Free" tile for the second it takes the refetch to arrive.
+ */
+export function applyPlacedOrderToFloor(queryClient: QueryClient, order: PlacedTableOrder) {
+  if (!order.diningAreaId || !order.tableSessionId) {
+    return;
+  }
+  const sessionId = order.tableSessionId;
+  const awaiting = order.status === "AWAITING_RECEPTION";
+  queryClient.setQueryData<FloorPlan>(FLOOR_QUERY_KEY, (plan) =>
+    patchFloorTable(plan, order.diningAreaId as string, (table) => {
+      const busyState = awaiting ? "ORDER_AWAITING" : "IN_KITCHEN";
+      const keepState = table.state === "PAYING" || table.state === "BILL_REQUESTED" || table.state === "ORDER_AWAITING";
+      if (table.session) {
+        return {
+          ...table,
+          state: keepState ? table.state : busyState,
+          session: {
+            ...table.session,
+            awaitingCount: table.session.awaitingCount + (awaiting ? 1 : 0),
+            orderCount: (table.session.orderCount ?? 0) + 1,
+            total: (Number(table.session.total ?? 0) + Number(order.totalAmount)).toFixed(2),
+          },
+        };
+      }
+      return {
+        ...table,
+        state: busyState,
+        session: {
+          id: sessionId,
+          seatedAt: new Date().toISOString(),
+          waiter: null,
+          guestCount: 0,
+          awaitingCount: awaiting ? 1 : 0,
+          openCalls: [],
+          bill: null,
+          openedVia: "STAFF_ORDER",
+          openedByOrderId: null,
+          orderCount: 1,
+          total: order.totalAmount,
+          fromPreviousDay: false,
+          joinedTo: null,
+          joined: [],
+        },
+      };
+    }),
+  );
+  queryClient.invalidateQueries({ queryKey: FLOOR_QUERY_KEY });
+  queryClient.invalidateQueries({ queryKey: [...TABLE_SESSION_QUERY_KEY, sessionId] });
 }
 
 export function useTableSession(sessionId: string | null) {
@@ -117,11 +205,57 @@ export function useCloseTableSession() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: closeTableSession,
-    onSuccess: (_result, sessionId) => {
-      queryClient.invalidateQueries({ queryKey: FLOOR_QUERY_KEY });
-      queryClient.invalidateQueries({ queryKey: [...TABLE_SESSION_QUERY_KEY, sessionId] });
-    },
+    // Refused closes refetch too: whatever blocked it is now shown as it really is.
+    onSettled: () => invalidateTableViews(queryClient),
   });
+}
+
+// ---- Table sync actions (docs/TABLE_SYNC_SPEC.md R4, R7, R13). Not optimistic: each can be refused
+// (a taken table, a bill with payments), and a tile that jumps and jumps back would mislead the floor. ----
+
+export function useMoveOrderToTable() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ orderId, diningAreaId, expectedTableSessionId }: { orderId: string; diningAreaId: string; expectedTableSessionId: string | null }) =>
+      moveOrderToTable(orderId, { diningAreaId, expectedTableSessionId }),
+    onSettled: () => invalidateTableViews(queryClient),
+  });
+}
+
+export function useMoveTableSession() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ sessionId, diningAreaId }: { sessionId: string; diningAreaId: string }) => moveTableSession(sessionId, diningAreaId),
+    onSettled: () => invalidateTableViews(queryClient),
+  });
+}
+
+export function useMergeTableSession() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ sessionId, intoSessionId }: { sessionId: string; intoSessionId: string }) => mergeTableSession(sessionId, intoSessionId),
+    onSettled: () => invalidateTableViews(queryClient),
+  });
+}
+
+export function useSettleTable() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ sessionId, input }: { sessionId: string; input: SettleTableInput }) => settleTableSession(sessionId, input),
+    onSettled: () => invalidateTableViews(queryClient),
+  });
+}
+
+export function useVoidTableSession() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ sessionId, reason }: { sessionId: string; reason: string }) => voidTableSession(sessionId, reason),
+    onSettled: () => invalidateTableViews(queryClient),
+  });
+}
+
+export function usePrintTableBill() {
+  return useMutation({ mutationFn: (sessionId: string) => printTableBill(sessionId, import.meta.env.VITE_PRINTER_ID || undefined) });
 }
 
 // The print sheet's tables, sorted the way people count ("Table 2" before "Table 10").

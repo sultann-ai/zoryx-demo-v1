@@ -173,3 +173,79 @@ export function parseReason(raw: unknown): string {
 export function parseVerify(raw: unknown): void {
   asBody(raw, ["expectedVersion"]);
 }
+
+// ---------- Table sync (docs/TABLE_SYNC_SPEC.md R4, R7) ----------
+
+/** POST …/settle: { method: CASH | ONLINE, paidAmount?, discount?, discountReason?, expectedBillVersion? } */
+export function parseSettle(raw: unknown) {
+  const body = asBody(raw, ["method", "paidAmount", "discount", "discountReason", "expectedBillVersion"]);
+  if (body.method !== PaymentMethod.CASH && body.method !== PaymentMethod.ONLINE) {
+    throw new BillValidationError("method must be CASH or ONLINE");
+  }
+  const version = body.expectedBillVersion;
+  if (version !== undefined && (typeof version !== "number" || !Number.isInteger(version) || version < 0)) {
+    throw new BillValidationError("expectedBillVersion must be the bill version you saw");
+  }
+  return {
+    method: body.method as PaymentMethod,
+    paidAmount: body.paidAmount === undefined || body.paidAmount === null ? null : parseMoney(body.paidAmount, "paidAmount"),
+    discount: body.discount === undefined || body.discount === null ? undefined : parseMoney(body.discount, "discount"),
+    discountReason: reason(body.discountReason, "discountReason", false),
+    expectedBillVersion: version as number | undefined,
+  };
+}
+
+function requiredId(raw: unknown, field: string): string {
+  if (typeof raw !== "string" || raw.trim() === "") {
+    throw new BillValidationError(`${field} is required`);
+  }
+  return raw;
+}
+
+function idList(raw: unknown, field: string): string[] {
+  if (raw === undefined) {
+    return [];
+  }
+  if (!Array.isArray(raw) || raw.length > 100 || raw.some((value) => typeof value !== "string" || value === "")) {
+    throw new BillValidationError(`${field} must be a list of ids`);
+  }
+  return raw as string[];
+}
+
+/** POST /orders/:id/move-table: { diningAreaId, expectedTableSessionId: id | null } */
+export function parseMoveOrder(raw: unknown) {
+  const body = asBody(raw, ["diningAreaId", "expectedTableSessionId"]);
+  if (!("expectedTableSessionId" in body) || (body.expectedTableSessionId !== null && typeof body.expectedTableSessionId !== "string")) {
+    throw new BillValidationError("expectedTableSessionId (the target table's session you saw, or null) is required");
+  }
+  return { diningAreaId: requiredId(body.diningAreaId, "diningAreaId"), expectedTableSessionId: body.expectedTableSessionId as string | null };
+}
+
+/** POST …/move: { diningAreaId } */
+export function parseMoveSession(raw: unknown): string {
+  return requiredId(asBody(raw, ["diningAreaId"]).diningAreaId, "diningAreaId");
+}
+
+/** POST …/merge: { intoSessionId } */
+export function parseMerge(raw: unknown): string {
+  return requiredId(asBody(raw, ["intoSessionId"]).intoSessionId, "intoSessionId");
+}
+
+/** POST …/split-off: { diningAreaId, orderIds?, guestIds? } */
+export function parseSplitOff(raw: unknown) {
+  const body = asBody(raw, ["diningAreaId", "orderIds", "guestIds"]);
+  return {
+    diningAreaId: requiredId(body.diningAreaId, "diningAreaId"),
+    orderIds: idList(body.orderIds, "orderIds"),
+    guestIds: idList(body.guestIds, "guestIds"),
+  };
+}
+
+/** POST …/bill/print: { printerId? } */
+export function parsePrinterOnly(raw: unknown): string {
+  const body = asBody(raw, ["printerId"]);
+  if (body.printerId !== undefined && (typeof body.printerId !== "string" || body.printerId.trim() === "")) {
+    throw new BillValidationError("printerId must be a non-empty string");
+  }
+  return (body.printerId as string | undefined) ?? "main";
+}

@@ -59,6 +59,8 @@ import { ConfirmPaymentForm } from "../components/ConfirmPaymentForm";
 import { EditableLineNote } from "./orderDetail/EditableLineNote";
 import { OrderHistory } from "./orderDetail/OrderHistory";
 import { TableBillPanel } from "./tables/TableBillPanel";
+import { OrderTableCard } from "./orderDetail/OrderTableCard";
+import { PrintRunningBillButton } from "./tables/TableSessionActions";
 import { useTableSession } from "../hooks/useTables";
 import { useAuth } from "../context/AuthContext";
 
@@ -111,7 +113,7 @@ export function OrderDetailPage() {
   const { data: tableSession } = useTableSession(order?.tableSession?.id ?? null);
   const { data: kitchens, isError: isKitchensError } = useKitchens();
   const { data: employees, isError: isEmployeesError } = useEmployees();
-  const { data: diningAreas, isError: isDiningAreasError } = useDiningAreas();
+  const { isError: isDiningAreasError } = useDiningAreas();
   const { data: menuItems, isError: isMenuItemsError } = useMenuItems();
   const cancelMutation = useCancelOrder();
   const assignMutation = useAssignOrder();
@@ -136,7 +138,6 @@ export function OrderDetailPage() {
 
   const [assignWaiterId, setAssignWaiterId] = useState("");
   const [assignRiderId, setAssignRiderId] = useState("");
-  const [assignDiningAreaId, setAssignDiningAreaId] = useState("");
   const [assignError, setAssignError] = useState<string | null>(null);
 
   const [addItemMenuItemId, setAddItemMenuItemId] = useState("");
@@ -154,7 +155,6 @@ export function OrderDetailPage() {
     if (!hasInitializedAssignForm.current && order) {
       setAssignWaiterId(order.waiterId ?? "");
       setAssignRiderId(order.riderId ?? "");
-      setAssignDiningAreaId(order.diningAreaId ?? "");
       hasInitializedAssignForm.current = true;
     }
   }, [order]);
@@ -169,7 +169,6 @@ export function OrderDetailPage() {
   const kitchenNameById = new Map((kitchens ?? []).map((kitchen) => [kitchen.id, kitchen.name]));
   const employeeNameById = new Map((employees ?? []).map((employee) => [employee.id, employee.name]));
   const activeEmployees = (employees ?? []).filter((employee) => employee.isActive);
-  const activeDiningAreas = (diningAreas ?? []).filter((area) => area.isActive);
   const itemsByKitchen = new Map<string, OrderItem[]>();
   for (const item of order.items) {
     const bucket = itemsByKitchen.get(item.kitchenId);
@@ -183,7 +182,10 @@ export function OrderDetailPage() {
   const canCancel = CANCELLABLE_STATUSES.has(order.status);
   const isOnline = order.source === "ONLINE";
   // Any accepted, open order — every source and type. An unpaid one goes through Confirm Payment first.
-  const canComplete = COMPLETABLE_STATUSES.has(order.status);
+  // A table's orders are paid and completed through the table's bill only (table sync R4) — the server
+  // refuses the one-by-one path with USE_TABLE_BILL, so it isn't offered.
+  const isTableOrder = Boolean(order.tableSession);
+  const canComplete = COMPLETABLE_STATUSES.has(order.status) && !isTableOrder;
   const pickup = isPickup(order);
   // An accepted pickup order can also end as "Not collected" (the same statuses that can be delivered).
   const canMarkNotCollected = pickup && DELIVERABLE_STATUSES.has(order.status);
@@ -230,7 +232,6 @@ export function OrderDetailPage() {
         input: {
           ...(assignWaiterId !== "" ? { waiterId: assignWaiterId } : {}),
           ...(assignRiderId !== "" ? { riderId: assignRiderId } : {}),
-          ...(assignDiningAreaId !== "" ? { diningAreaId: assignDiningAreaId } : {}),
         },
       });
     } catch (error) {
@@ -380,13 +381,19 @@ export function OrderDetailPage() {
                   status={printerStatus?.online ? "ACTIVE" : "INACTIVE"}
                   label={printerStatus?.online ? "Printer: connected" : "Printer: offline"}
                 />
-                <Button
-                  variant="secondary"
-                  onClick={() => handlePrint("table-receipt")}
-                  disabled={printMutation.isPending}
-                >
-                  Print table receipt
-                </Button>
+                {/* At a table, the bill on paper is the whole table's (every order from every source) — this
+                    order alone prints only as "this order only" (table sync R13). */}
+                {order.tableSession?.status === "OPEN" ? (
+                  <PrintRunningBillButton sessionId={order.tableSession.id} className="" />
+                ) : (
+                  <Button
+                    variant="secondary"
+                    onClick={() => handlePrint("table-receipt")}
+                    disabled={printMutation.isPending}
+                  >
+                    Print table receipt
+                  </Button>
+                )}
                 <Button
                   variant="secondary"
                   onClick={() => handlePrint("kitchen-tickets")}
@@ -395,7 +402,7 @@ export function OrderDetailPage() {
                   Print kitchen tickets
                 </Button>
                 <Button variant="secondary" onClick={() => handlePrint("receipt")} disabled={printMutation.isPending}>
-                  Print final receipt
+                  {isTableOrder ? "Print this order only" : "Print final receipt"}
                 </Button>
               </>
             )}
@@ -498,6 +505,8 @@ export function OrderDetailPage() {
       )}
 
       {printFeedback?.origin === "header" && <PrintFeedbackMessage feedback={printFeedback} />}
+
+      <OrderTableCard order={order} />
 
       {order.tableSession && tableSession && (
         <TableBillPanel
@@ -608,7 +617,7 @@ export function OrderDetailPage() {
         )}
       </Card>
 
-      {order.paymentMethod === "CASH" && (
+      {order.paymentMethod === "CASH" && !isTableOrder && (
         <Card title="Confirm Payment" className="max-w-2xl">
           {order.paymentStatus === "VERIFIED" ? (
             <div className="flex flex-col gap-3">
@@ -887,23 +896,6 @@ export function OrderDetailPage() {
                 {activeEmployees.map((employee) => (
                   <option key={employee.id} value={employee.id}>
                     {employee.name}
-                  </option>
-                ))}
-              </Select>
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <label htmlFor="assign-dining-area" className="text-meta font-medium text-ink-muted">
-                Dining area
-              </label>
-              <Select
-                id="assign-dining-area"
-                value={assignDiningAreaId}
-                onChange={(event) => setAssignDiningAreaId(event.target.value)}
-              >
-                <option value="">Unassigned</option>
-                {activeDiningAreas.map((area) => (
-                  <option key={area.id} value={area.id}>
-                    {area.name}
                   </option>
                 ))}
               </Select>

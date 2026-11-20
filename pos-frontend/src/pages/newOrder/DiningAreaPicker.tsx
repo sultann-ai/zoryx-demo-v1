@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import type { DiningArea } from "../../api/diningAreas";
+import type { FloorTable } from "../../api/tables";
 import { cn } from "../../components/ui/cn";
 import { GroupedDiningAreaGrid } from "../takeOrder/GroupedDiningAreaGrid";
 import { DiningAreaGrid } from "./DiningAreaGrid";
+import { tableAvailability } from "./tableAvailability";
 import type { AreaChip } from "./diningAreaFilter";
 import {
   ALL_AREAS_KEY,
@@ -68,12 +70,50 @@ interface DiningAreaPickerProps {
   // "flat": one grid, each tile labelled with its area under "All" (POS New Order).
   // "grouped": a heading per area (the order taker's table step).
   layout?: "flat" | "grouped";
+  // The live floor map by table id (table sync): each tile says whether it's free, open or unavailable,
+  // and the line under the grid says what this order will do to the chosen table.
+  floorById?: Map<string, FloorTable>;
+}
+
+// "Add to Family Hall · Table 2's bill" / "Table 2 is free — this order seats it" / why it can't be used.
+export function TableChoiceNote({ table, floorTable }: { table: DiningArea | undefined; floorTable: FloorTable | undefined }) {
+  if (!table) {
+    return null;
+  }
+  const availability = tableAvailability(floorTable);
+  const name = table.area ? `${table.area} · ${table.name}` : table.name;
+  if (availability.kind === "open") {
+    return (
+      <p role="status" className="m-0 rounded-card border border-status-active bg-status-active-bg px-3 py-2 text-body text-ink">
+        <strong>Add to {name}&rsquo;s bill.</strong>{" "}
+        <span className="text-ink-muted">
+          It&rsquo;s already open ({availability.summary}){availability.joinedTo ? `, joined with ${availability.joinedTo}` : ""} — this order
+          goes on the same bill.
+        </span>
+      </p>
+    );
+  }
+  if (availability.kind === "free") {
+    return (
+      <p role="status" className="m-0 text-body text-ink-muted">
+        <strong className="text-ink">{name} is free.</strong> Sending this order seats it — the table shows as taken right away.
+      </p>
+    );
+  }
+  if (availability.kind === "blocked") {
+    return (
+      <p role="alert" className="m-0 text-body text-status-danger-text">
+        {name}: {availability.reason}
+      </p>
+    );
+  }
+  return null;
 }
 
 // The table picker for both New Order screens: area chips ("All" + every area in use +
 // "Other") above the tables. The chosen chip is remembered for the browser session. A table
 // that's already selected stays selected when the filter hides it.
-export function DiningAreaPicker({ diningAreas, selectedId, onSelect, layout = "flat" }: DiningAreaPickerProps) {
+export function DiningAreaPicker({ diningAreas, selectedId, onSelect, layout = "flat", floorById }: DiningAreaPickerProps) {
   const chips = buildAreaChips(diningAreas);
   const [storedKey, setStoredKey] = useState<string | null>(() => loadStoredAreaFilter());
   const activeKey = resolveAreaFilter(storedKey, chips);
@@ -89,15 +129,17 @@ export function DiningAreaPicker({ diningAreas, selectedId, onSelect, layout = "
       {/* Nothing to filter between with a single area (or none). */}
       {chips.length > 1 && <AreaFilterChips chips={chips} activeKey={activeKey} onSelect={handleSelectChip} />}
       {layout === "grouped" ? (
-        <GroupedDiningAreaGrid diningAreas={visible} selectedId={selectedId} onSelect={onSelect} />
+        <GroupedDiningAreaGrid diningAreas={visible} selectedId={selectedId} onSelect={onSelect} {...(floorById ? { floorById } : {})} />
       ) : (
         <DiningAreaGrid
           diningAreas={visible}
           selectedId={selectedId}
           onSelect={onSelect}
           showArea={activeKey === ALL_AREAS_KEY && chips.length > 1}
+          {...(floorById ? { floorById } : {})}
         />
       )}
+      {floorById && <TableChoiceNote table={diningAreas.find((area) => area.id === selectedId)} floorTable={floorById.get(selectedId)} />}
     </div>
   );
 }

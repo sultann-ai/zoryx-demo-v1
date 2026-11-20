@@ -67,12 +67,28 @@ export default function TableHome() {
   return (
     <div className="space-y-6 pb-32">
       {poll.session.closedReason && <ClosedNotice reason={poll.session.closedReason} />}
+      {poll.table.movedFrom && (
+        <p role="status" className="mx-4 flex items-start gap-2 rounded-card bg-sunflower p-3 text-ink">
+          <Icon name="repeat" className="mt-1 size-5 shrink-0" />
+          <span>
+            <Fill text={t('table.moved')} values={{ from: poll.table.movedFrom.name, to: poll.table.name }} />
+          </span>
+        </p>
+      )}
+      {(poll.joinedTables ?? []).length > 0 && (
+        <p role="status" className="mx-4 flex items-start gap-2 rounded-card bg-band p-3 text-ink">
+          <Icon name="users" className="mt-1 size-5 shrink-0" />
+          <span>
+            <Fill text={t('table.joined')} values={{ tables: [poll.table.name, ...(poll.joinedTables ?? [])].join(' + ') }} />
+          </span>
+        </p>
+      )}
 
       <section aria-labelledby="table-name" className="tone-dark mx-4 mt-3 space-y-4 rounded-card bg-forest p-5 text-on-action shadow-soft">
         <div>
           <p className="eyebrow">{t('table.welcome')}</p>
           <h1 id="table-name" className="text-h2 leading-tight">
-            {poll.table.name}
+            {[poll.table.name, ...(poll.joinedTables ?? [])].join(' + ')}
           </h1>
           {poll.table.area && <p className="text-lg">{poll.table.area}</p>}
         </div>

@@ -128,6 +128,8 @@ interface OrderBase {
   source: OrderSource;
   type: OrderType;
   diningAreaId: string | null;
+  // The table's session (table sync): every dine-in order at a table has one; null otherwise.
+  tableSessionId?: string | null;
   waiterId: string | null;
   riderId: string | null;
   customerId: string | null;
@@ -190,10 +192,14 @@ export interface OrderDetail extends OrderBase {
   placedByStaff: { id: string; name: string } | null;
   customer: { id: string; name: string; phone: string } | null;
   customerAddress: { id: string; addressText: string } | null;
-  // Table QR rounds only: the table's session and the guest who sent the round.
+  // Every dine-in order at a table (table sync): the table's session. tableGuest only for a QR round.
   tableSession?: { id: string; diningAreaId: string; status: "OPEN" | "CLOSED" | "VOIDED" } | null;
   tableGuest?: OrderTableGuest | null;
 }
+
+// POST /orders and /orders/submit: the order, plus the table session it opened (table sync R2) — null
+// when it joined a table that was already open (or isn't at a table). The PIN is shown once.
+export type PlacedOrder = OrderDetail & { tableOpened?: { sessionId: string; pin: string | null } | null };
 
 export interface ListOrdersFilter {
   businessDayId?: string;
@@ -206,6 +212,9 @@ export interface CreateOrderInput {
   type: OrderType;
   paymentMethod: PaymentMethod;
   diningAreaId?: string;
+  // Dine-in placed now (table sync R2): the table's open session the cashier saw (add to it), or null
+  // ("the table looked free"). The server answers 409 TABLE_OCCUPIED / TABLE_STATE_CHANGED on a mismatch.
+  expectedTableSessionId?: string | null;
   deliveryAddress?: string;
   waiterId?: string;
   riderId?: string;
@@ -235,10 +244,10 @@ export interface CreateOrderInput {
   }[];
 }
 
+// Waiter and rider only — an order changes table through Move to table (table sync R7).
 export interface AssignOrderInput {
   waiterId?: string;
   riderId?: string;
-  diningAreaId?: string;
 }
 
 export interface AddOrderItemsInput {
@@ -297,6 +306,8 @@ export interface AcceptOrderInput {
   // Required (and must be true) to accept an ONLINE-sourced, ONLINE-paid order — confirms
   // reception checked the payment screenshot before sending it to the kitchen.
   paymentVerified?: boolean;
+  // A dine-in order released onto a busy table (TABLE_DECISION_NEEDED): add it to that table's session.
+  expectedTableSessionId?: string | null;
 }
 
 export interface RejectOrderInput {
@@ -320,6 +331,8 @@ export interface UpdateSubmissionInput {
 // call, made at accept time.
 export interface SubmitOrderInput {
   diningAreaId: string;
+  // Table sync R2: as CreateOrderInput.expectedTableSessionId.
+  expectedTableSessionId: string | null;
   items: CreateOrderInput["items"];
   deals?: CreateOrderInput["deals"];
   notes?: string;
@@ -370,8 +383,8 @@ export const ordersApi = {
     const { data } = await apiClient.get<OrderDetail>(`/api/pos/orders/${id}`);
     return data;
   },
-  create: async (input: CreateOrderInput): Promise<OrderDetail> => {
-    const { data } = await apiClient.post<OrderDetail>("/api/pos/orders", input);
+  create: async (input: CreateOrderInput): Promise<PlacedOrder> => {
+    const { data } = await apiClient.post<PlacedOrder>("/api/pos/orders", input);
     return data;
   },
   cancel: async (id: string, cancelledReason: string): Promise<OrderDetail> => {
@@ -493,8 +506,8 @@ export const ordersApi = {
     const { data } = await apiClient.post<OrderDetail>(`/api/pos/orders/${id}/cancel-scheduled`, reason ? { reason } : {});
     return data;
   },
-  submit: async (input: SubmitOrderInput): Promise<OrderDetail> => {
-    const { data } = await apiClient.post<OrderDetail>("/api/pos/orders/submit", input);
+  submit: async (input: SubmitOrderInput): Promise<PlacedOrder> => {
+    const { data } = await apiClient.post<PlacedOrder>("/api/pos/orders/submit", input);
     return data;
   },
   listChanges: async (id: string): Promise<OrderChange[]> => {

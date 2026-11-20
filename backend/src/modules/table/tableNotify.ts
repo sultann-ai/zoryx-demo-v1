@@ -114,34 +114,151 @@ export function billStateInputs(bill: BillSummary | null): Pick<Parameters<typeo
   return { billRequested: requested, sharesPaidOrSubmitted: requested ? Math.max(bill.paidOrSubmitted, bill.status === TableBillStatus.PAID ? 1 : 0) : 0 };
 }
 
-export async function loadTableState(
-  db: Db,
-  diningAreaId: string,
-): Promise<{ sessionId: string | null } & DerivedTableState> {
-  const table = await db.diningArea.findUnique({
-    where: { id: diningAreaId },
-    select: {
-      outOfService: true,
-      tableSessions: {
-        where: { status: TableSessionStatus.OPEN },
-        select: {
-          id: true,
-          orders: { select: { status: true, items: { select: { status: true } } } },
-          calls: { where: { status: { in: OPEN_CALL_STATUSES_FOR_STATE } }, select: { type: true, escalatedAt: true } },
-        },
-      },
-    },
+// ---------- The one table-state loader (docs/TABLE_SYNC_SPEC.md R1) ----------
+
+// Everything deriveTableState and the floor tile need from a session. Loaded for the session a table's
+// orders actually live on: its own, or — for a table merged into another — its parent's.
+const floorSessionSelect = {
+  id: true,
+  seatedAt: true,
+  businessDayId: true,
+  openedVia: true,
+  openedByOrderId: true,
+  diningAreaId: true,
+  waiterStaff: { select: { id: true, name: true } },
+  guests: { where: { revokedAt: null }, select: { id: true } },
+  orders: { select: { status: true, totalAmount: true, items: { select: { status: true } } } },
+  calls: {
+    where: { status: { in: OPEN_CALL_STATUSES_FOR_STATE } },
+    select: { id: true, type: true, status: true, createdAt: true, escalatedAt: true },
+    orderBy: { createdAt: "asc" as const },
+  },
+  bill: { select: { status: true, splitVersion: true, shares: { select: { status: true, splitVersion: true } } } },
+  diningArea: { select: { id: true, name: true } },
+  mergedChildren: { where: { status: TableSessionStatus.OPEN }, select: { diningArea: { select: { id: true, name: true } } } },
+} satisfies Prisma.TableSessionSelect;
+
+const floorTableSelect = {
+  id: true,
+  name: true,
+  area: true,
+  type: true,
+  capacity: true,
+  isActive: true,
+  layoutX: true,
+  layoutY: true,
+  layoutW: true,
+  layoutH: true,
+  shape: true,
+  rotation: true,
+  outOfService: true,
+  tableSessions: { where: { status: TableSessionStatus.OPEN }, select: { id: true, mergedIntoSessionId: true } },
+} satisfies Prisma.DiningAreaSelect;
+
+/**
+ * Every table matching `where` with its derived state and its session as the floor map shows it. The ONE
+ * place a table's state is computed: GET /tables/floor and every "table:updated" payload come from here.
+ */
+export async function loadTableStates(db: Db, where: Prisma.DiningAreaWhereInput) {
+  const [tables, activeDay] = await Promise.all([
+    db.diningArea.findMany({ where, select: floorTableSelect, orderBy: { name: "asc" } }),
+    db.businessDay.findFirst({ where: { isActive: true }, select: { id: true } }),
+  ]);
+  const ownerIds = [...new Set(tables.flatMap((table) => table.tableSessions.map((session) => session.mergedIntoSessionId ?? session.id)))];
+  const sessions = ownerIds.length ? await db.tableSession.findMany({ where: { id: { in: ownerIds } }, select: floorSessionSelect }) : [];
+  const sessionById = new Map(sessions.map((session) => [session.id, session]));
+
+  return tables.map((table) => {
+    const own = table.tableSessions[0] ?? null;
+    const session = own ? (sessionById.get(own.mergedIntoSessionId ?? own.id) ?? null) : null;
+    const counts = summariseOrders(session?.orders ?? []);
+    const bill = summariseBill(session?.bill ?? null);
+    const fromPreviousDay = session !== null && session.businessDayId !== activeDay?.id;
+    const derived = deriveTableState({
+      outOfService: table.outOfService,
+      hasOpenSession: session !== null,
+      fromPreviousDay,
+      ...billStateInputs(bill),
+      ...callCounts(session?.calls ?? []),
+      ...counts,
+    });
+    const placed = table.layoutX !== null && table.layoutY !== null && table.layoutW !== null && table.layoutH !== null;
+    const live = (session?.orders ?? []).filter((order) => order.status !== OrderStatus.CANCELLED);
+    return {
+      id: table.id,
+      name: table.name,
+      area: table.area,
+      type: table.type,
+      capacity: table.capacity,
+      // Only an inactive table that still has an open session is listed (from before a table in use could
+      // no longer be switched off); the map flags it.
+      inactive: !table.isActive,
+      layout: placed
+        ? { x: table.layoutX, y: table.layoutY, w: table.layoutW, h: table.layoutH, shape: table.shape, rotation: table.rotation }
+        : null,
+      outOfService: table.outOfService,
+      state: derived.state,
+      attention: derived.attention,
+      readyCount: derived.readyCount,
+      session: session
+        ? {
+            id: session.id,
+            seatedAt: session.seatedAt,
+            waiter: session.waiterStaff,
+            guestCount: session.guests.length,
+            awaitingCount: counts.awaitingOrders,
+            openCalls: session.calls.map((call) => ({
+              id: call.id,
+              type: call.type,
+              status: call.status,
+              createdAt: call.createdAt,
+              escalated: call.escalatedAt !== null,
+            })),
+            bill: bill ? { status: bill.status, paid: bill.paid, of: bill.of } : null,
+            openedVia: session.openedVia,
+            openedByOrderId: session.openedByOrderId,
+            orderCount: live.length,
+            total: live.reduce((sum, order) => sum.plus(order.totalAmount), new Prisma.Decimal(0)).toFixed(2),
+            fromPreviousDay,
+            // This table is merged into another table's session (R7): the tile reads "with <joinedTo>".
+            joinedTo: session.diningAreaId !== table.id ? { tableId: session.diningArea.id, name: session.diningArea.name } : null,
+            // The tables merged into this session, other than this one.
+            joined: session.mergedChildren
+              .map((child) => ({ tableId: child.diningArea.id, name: child.diningArea.name }))
+              .filter((child) => child.tableId !== table.id),
+          }
+        : null,
+    };
   });
-  const session = table?.tableSessions[0] ?? null;
-  const bill = session ? await loadBillSummary(db, session.id) : null;
-  const derived = deriveTableState({
-    outOfService: table?.outOfService ?? false,
-    hasOpenSession: session !== null,
-    ...billStateInputs(bill),
-    ...callCounts(session?.calls ?? []),
-    ...summariseOrders(session?.orders ?? []),
+}
+
+export type FloorTable = Awaited<ReturnType<typeof loadTableStates>>[number];
+
+export async function loadTableState(db: Db, diningAreaId: string): Promise<{ sessionId: string | null } & DerivedTableState> {
+  const [table] = await loadTableStates(db, { id: diningAreaId });
+  return {
+    sessionId: table?.session?.id ?? null,
+    state: table?.state ?? "EMPTY",
+    attention: table?.attention ?? null,
+    readyCount: table?.readyCount ?? 0,
+  };
+}
+
+/** The tables that share one session: the session's own table plus every table merged into it. */
+async function mergeGroupTableIds(db: Db, diningAreaId: string): Promise<string[]> {
+  const own = await db.tableSession.findFirst({
+    where: { diningAreaId, status: TableSessionStatus.OPEN },
+    select: { id: true, mergedIntoSessionId: true },
   });
-  return { sessionId: session?.id ?? null, ...derived };
+  if (!own) {
+    return [diningAreaId];
+  }
+  const ownerId = own.mergedIntoSessionId ?? own.id;
+  const group = await db.tableSession.findMany({
+    where: { OR: [{ id: ownerId }, { mergedIntoSessionId: ownerId, status: TableSessionStatus.OPEN }] },
+    select: { diningAreaId: true },
+  });
+  return [...new Set([diningAreaId, ...group.map((session) => session.diningAreaId)])];
 }
 
 // Never lets a missing Socket.io (a script, a test without the mock) fail the write that came before.
@@ -164,12 +281,45 @@ export function emitToFloor(event: string, payload: unknown): void {
 
 // "table:updated" with the table's freshly derived state. Fire-and-forget after a commit; a failure is
 // logged, never surfaced to the request that caused it.
+// Merged tables (R7) all read one session, so a change to it re-emits every table of the group.
 export async function emitTableUpdated(diningAreaId: string): Promise<void> {
+  await emitTablesUpdated([diningAreaId]);
+}
+
+export async function emitTablesUpdated(diningAreaIds: string[]): Promise<void> {
   try {
-    const state = await loadTableState(prisma, diningAreaId);
-    emitToFloor("table:updated", { diningAreaId, sessionId: state.sessionId, state: state.state, attention: state.attention });
+    const ids = new Set<string>();
+    for (const id of new Set(diningAreaIds)) {
+      for (const member of await mergeGroupTableIds(prisma, id)) {
+        ids.add(member);
+      }
+    }
+    for (const table of await loadTableStates(prisma, { id: { in: [...ids] } })) {
+      emitToFloor("table:updated", { diningAreaId: table.id, sessionId: table.session?.id ?? null, state: table.state, attention: table.attention });
+    }
   } catch (error) {
     console.error("[table] could not emit table:updated", error);
+  }
+}
+
+// "table-session:updated" (spec §6.2; table sync adds openedVia and mergedIntoSessionId). After the commit.
+export async function emitSessionUpdated(sessionId: string): Promise<void> {
+  try {
+    const session = await prisma.tableSession.findUnique({
+      where: { id: sessionId },
+      select: { id: true, diningAreaId: true, status: true, openedVia: true, mergedIntoSessionId: true },
+    });
+    if (session) {
+      emitToFloor("table-session:updated", {
+        sessionId: session.id,
+        diningAreaId: session.diningAreaId,
+        status: session.status,
+        openedVia: session.openedVia,
+        mergedIntoSessionId: session.mergedIntoSessionId,
+      });
+    }
+  } catch (error) {
+    console.error("[table] could not emit table-session:updated", error);
   }
 }
 
@@ -196,7 +346,9 @@ export async function touchTableSession(db: Db, sessionId: string): Promise<void
 // items added/removed/advanced, completed), bump the session's version and refresh the floor map. Runs
 // after the order's own commit, so a poll landing in the few milliseconds between may still get one
 // last 304 — the next poll sees the change. A failure here never fails the order change.
-export async function tableOrderChanged(tableSessionId: string | null | undefined): Promise<void> {
+// Table sync: also announces the session itself when the change opened it or ended it (an order that opened
+// the table, a cancel that auto-released it); the guests' poll sees every change through the version bump.
+export async function tableOrderChanged(tableSessionId: string | null | undefined, options: { sessionOpened?: boolean } = {}): Promise<void> {
   if (!tableSessionId) {
     return;
   }
@@ -204,8 +356,11 @@ export async function tableOrderChanged(tableSessionId: string | null | undefine
     const session = await prisma.tableSession.update({
       where: { id: tableSessionId },
       data: { version: { increment: 1 } },
-      select: { diningAreaId: true },
+      select: { diningAreaId: true, status: true },
     });
+    if (options.sessionOpened || session.status !== TableSessionStatus.OPEN) {
+      await emitSessionUpdated(tableSessionId);
+    }
     await emitTableUpdated(session.diningAreaId);
     // An order change can cancel the bill's split (tableBillGuard.syncTableBill): tell the bill's watchers.
     await emitTableBillUpdated(tableSessionId);

@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import { StaffRole } from "../../../generated/prisma/client";
 import { validateNewPassword } from "../../common/password";
 import { disconnectStaffSockets } from "../../config/socket";
+import { releaseWaiterFromOpenSessions } from "../table/tableSession.service";
 import * as staffService from "./staff.service";
 
 const VALID_ROLES = Object.values(StaffRole);
@@ -14,6 +15,21 @@ async function endLiveSessions(staffId: string, reason: string): Promise<void> {
     await disconnectStaffSockets(staffId, reason);
   } catch (error) {
     console.error(`Could not disconnect sockets of staff ${staffId}`, error);
+  }
+}
+
+// Roles that can be a table's waiter (tableSession.service's WAITER_ROLES).
+const FLOOR_ROLES: StaffRole[] = [StaffRole.ORDER_TAKER, StaffRole.POS_ADMIN, StaffRole.SUPER_ADMIN];
+
+// Table sync R12: an account that can no longer work the floor stops being any open table's waiter.
+async function releaseTables(staff: { id: string; isActive: boolean; role: StaffRole }, actorId: string): Promise<void> {
+  if (staff.isActive && FLOOR_ROLES.includes(staff.role)) {
+    return;
+  }
+  try {
+    await releaseWaiterFromOpenSessions(staff.id, actorId);
+  } catch (error) {
+    console.error(`Could not release the tables of staff ${staff.id}`, error);
   }
 }
 
@@ -143,6 +159,7 @@ export async function updateStaff(req: Request, res: Response) {
     if (reason) {
       await endLiveSessions(staff.id, reason);
     }
+    await releaseTables(staff, req.staff?.id ?? staff.id);
     res.json(staff);
   } catch (error) {
     if (staffService.isNotFoundError(error)) {
@@ -165,6 +182,7 @@ export async function deactivateStaff(req: Request, res: Response) {
   try {
     const staff = await staffService.deactivateStaff(req.params.id as string);
     await endLiveSessions(staff.id, "Account deleted");
+    await releaseTables(staff, req.staff?.id ?? staff.id);
     res.json(staff);
   } catch (error) {
     if (staffService.isNotFoundError(error)) {

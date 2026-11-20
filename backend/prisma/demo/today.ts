@@ -13,6 +13,7 @@ import { karachiDate } from "../../src/common/pkTime";
 import * as guestOrderService from "../../src/modules/guestOrder/guestOrder.service";
 import type { CreateOrderItemInput } from "../../src/modules/order/order.service";
 import * as orderService from "../../src/modules/order/order.service";
+import * as tableBillService from "../../src/modules/table/tableBill.service";
 import type { CatalogIds } from "./catalog";
 import { placeholderProof } from "./images";
 import type { SeededRandom } from "./random";
@@ -66,36 +67,46 @@ export async function seedToday(db: PrismaClient, random: SeededRandom, ids: Cat
   await orderService.updatePaymentStatus(a1.id, PaymentStatus.VERIFIED, { paidAmount: roundUp(a1.totalAmount, 500), actorId: staff("cashier"), actorRole: StaffRole.POS_ADMIN });
   created.push(a1.id);
 
-  // 2. A dine-in table that ate, paid with a regular-customer discount, and was completed.
-  const a2 = await pos({ type: OrderType.DINE_IN, placedByStaffId: staff("manager"), diningAreaId: table("G2"), waiterId: employee("waiter1"), items: [line("hot-fudge", 1), line("cappuccino", 2), line("fudge-brownie", 1)] });
+  // 2. A dine-in table that ate, paid with a regular-customer discount, and was closed. A table pays through
+  // its bill only (docs/TABLE_SYNC_SPEC.md R4): Settle & close at the counter.
+  const manager = { kind: "staff" as const, id: staff("manager"), role: StaffRole.POS_ADMIN };
+  const cashier = { kind: "staff" as const, id: staff("cashier"), role: StaffRole.POS_ADMIN };
+  const a2 = await pos({ type: OrderType.DINE_IN, placedByStaffId: staff("manager"), placedByRole: StaffRole.POS_ADMIN, diningAreaId: table("G2"), waiterId: employee("waiter1"), items: [line("hot-fudge", 1), line("cappuccino", 2), line("fudge-brownie", 1)] });
   await setItemStatuses(a2.id, { "hot-fudge": "SERVED", cappuccino: "SERVED", "fudge-brownie": "SERVED" });
-  const a2Paid = await orderService.updatePaymentStatus(a2.id, PaymentStatus.VERIFIED, {
+  await tableBillService.settleTable(a2.tableSessionId!, manager, {
+    method: PaymentMethod.CASH,
+    paidAmount: new Prisma.Decimal(2500),
     discount: new Prisma.Decimal(150),
     discountReason: "Regular customer",
-    paidAmount: new Prisma.Decimal(2500),
-    actorId: staff("manager"),
-    actorRole: StaffRole.POS_ADMIN,
+    expectedBillVersion: undefined,
   });
-  await orderService.completeOrder(a2Paid.id, staff("manager"));
   created.push(a2.id);
 
   // 3–4. Two dine-in tables that have eaten (everything served) and haven't paid yet.
-  const u1 = await pos({ type: OrderType.DINE_IN, placedByStaffId: staff("cashier"), diningAreaId: table("F3"), items: [line("hot-chocolate", 2)], deals: [{ dealId: ids.dealIdByCode.get("COUPLE-SUNDAE")!, quantity: 1 }] });
+  const u1 = await pos({ type: OrderType.DINE_IN, placedByStaffId: staff("cashier"), placedByRole: StaffRole.POS_ADMIN, diningAreaId: table("F3"), items: [line("hot-chocolate", 2)], deals: [{ dealId: ids.dealIdByCode.get("COUPLE-SUNDAE")!, quantity: 1 }] });
   await setItemStatuses(u1.id, { "hot-chocolate": "SERVED", "hot-fudge": "SERVED", "lotus-sundae": "SERVED" });
   created.push(u1.id);
-  const u2 = await pos({ type: OrderType.DINE_IN, placedByStaffId: staff("cashier"), diningAreaId: table("G5"), waiterId: employee("waiter3"), items: [line("banana-split", 1), line("cold-coffee", 1, { size: "Regular", notes: "less ice" }), line("chicken-patty", 2)] });
+  const u2 = await pos({ type: OrderType.DINE_IN, placedByStaffId: staff("cashier"), placedByRole: StaffRole.POS_ADMIN, diningAreaId: table("G5"), waiterId: employee("waiter3"), items: [line("banana-split", 1), line("cold-coffee", 1, { size: "Regular", notes: "less ice" }), line("chicken-patty", 2)] });
   await setItemStatuses(u2.id, { "banana-split": "SERVED", "cold-coffee": "SERVED", "chicken-patty": "SERVED" });
   created.push(u2.id);
 
-  // 5. A dine-in table that paid up front; the kitchens are still on it.
-  const p4 = await pos({ type: OrderType.DINE_IN, placedByStaffId: staff("cashier"), diningAreaId: table("T1"), items: [line("tiramisu", 1), line("latte", 2), line("pista", 1, { size: "Triple", addOns: ["Nutella"] })] });
-  await orderService.updatePaymentStatus(p4.id, PaymentStatus.VERIFIED, { paidAmount: roundUp(p4.totalAmount, 1000), actorId: staff("cashier"), actorRole: StaffRole.POS_ADMIN });
+  // 5. A dine-in table that paid up front; the kitchens are still on it. Its bill is PAID (one share, cash at
+  // the counter) and the table stays open until staff close it.
+  const p4 = await pos({ type: OrderType.DINE_IN, placedByStaffId: staff("cashier"), placedByRole: StaffRole.POS_ADMIN, diningAreaId: table("T1"), items: [line("tiramisu", 1), line("latte", 2), line("pista", 1, { size: "Triple", addOns: ["Nutella"] })] });
+  const p4Session = p4.tableSessionId!;
+  const { bill: p4Requested } = await tableBillService.requestBill(p4Session, cashier);
+  const { bill: p4Split } = await tableBillService.setSplit(p4Session, cashier, {
+    mode: "CUSTOM",
+    shares: [{ amount: p4.totalAmount, guestId: null }],
+    expectedVersion: p4Requested!.version,
+  });
+  await tableBillService.markSharePaid(p4Session, cashier, p4Split!.shares[0]!.id, roundUp(p4.totalAmount, 1000));
   await setItemStatuses(p4.id, { tiramisu: "READY", latte: "READY", pista: "PREPARING" });
   created.push(p4.id);
 
   // 6. A waiter's order, accepted, cooking — and the waiter has asked to add two chai (pending review).
   const waiterItems = [line("falooda", 2), line("chicken-sandwich", 1), line("doodh-patti", 3, { notes: "kam cheeni" })];
-  const { order: p2Submitted } = await orderService.submitOrderTakerOrder({ placedByStaffId: staff("waiter1"), diningAreaId: table("F2"), items: waiterItems, clientRequestId: random.uuid() });
+  const { order: p2Submitted } = await orderService.submitOrderTakerOrder({ placedByStaffId: staff("waiter1"), diningAreaId: table("F2"), expectedTableSessionId: null, items: waiterItems, clientRequestId: random.uuid() });
   const p2 = await orderService.acceptOrder(p2Submitted.id, staff("cashier"), {});
   await setItemStatuses(p2.id, { falooda: "PREPARING", "doodh-patti": "READY" });
   await orderService.createOrderChange({
@@ -129,6 +140,7 @@ export async function seedToday(db: PrismaClient, random: SeededRandom, ids: Cat
   const { order: w1 } = await orderService.submitOrderTakerOrder({
     placedByStaffId: staff("waiter2"),
     diningAreaId: table("G3"),
+    expectedTableSessionId: null,
     items: [line("hot-fudge", 2), line("gajar-halwa", 1), line("green-tea", 2)],
     notes: "Guests in a hurry",
     clientRequestId: random.uuid(),
@@ -195,6 +207,8 @@ export async function seedToday(db: PrismaClient, random: SeededRandom, ids: Cat
     await db.$executeRaw`UPDATE "OrderChange" SET "createdAt" = "createdAt" + make_interval(secs => ${shiftMs / 1000}) WHERE "orderId" = ${orderId}`;
     await db.$executeRaw`UPDATE "InventoryTransaction" SET "createdAt" = "createdAt" + make_interval(secs => ${shiftMs / 1000}) WHERE "relatedOrderId" = ${orderId}`;
   }
+  // A table opened by one of these orders was seated when that order was placed.
+  await db.$executeRaw`UPDATE "TableSession" s SET "seatedAt" = o."createdAt" FROM "Order" o WHERE o."id" = s."openedByOrderId"`;
 
   return { orders: created.length };
 }

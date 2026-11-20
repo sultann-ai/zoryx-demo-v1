@@ -3,6 +3,7 @@ import { sendPaymentProof } from "../media/sendPaymentProof";
 import { buildTableReceiptPrintDoc, dispatchPrintJob } from "../print/print.service";
 import * as billService from "./tableBill.service";
 import * as validators from "./tableBill.validators";
+import * as moves from "./tableMoves.service";
 import { TableStaffError } from "./tableErrors";
 
 // Staff side of the table bill: /api/pos/table-sessions/:id/bill… and /receipt (docs/TABLE_QR_SPEC.md §4.2
@@ -112,4 +113,58 @@ export async function printReceipt(req: Request, res: Response) {
     }
     return { printed: result.printed };
   });
+}
+
+// ---------- Table sync (docs/TABLE_SYNC_SPEC.md R4, R7, R13) ----------
+
+// POST /:id/settle — the whole table paid at the counter, then closed.
+export async function settle(req: Request, res: Response) {
+  await run(res, () => billService.settleTable(sessionId(req), staffActor(req), validators.parseSettle(req.body)));
+}
+
+// POST /:id/bill/collect-cash — every unpaid share of the split collected in cash. { expectedVersion }
+export async function collectCash(req: Request, res: Response) {
+  await run(res, () => billService.collectRemainingCash(sessionId(req), staffActor(req), validators.parseExpectedVersionOnly(req.body)));
+}
+
+// POST /:id/bill/print — the running bill ("not a receipt"), built on the server. { printerId? }
+export async function printBill(req: Request, res: Response) {
+  await run(res, async () => {
+    const printerId = validators.parsePrinterOnly(req.body);
+    const snapshot = await billService.runningBillSnapshot(sessionId(req), staffActor(req));
+    const result = await dispatchPrintJob(printerId, [buildTableReceiptPrintDoc(snapshot, { final: false })]);
+    if (result.failure) {
+      const status = result.failure.status === "offline" ? 503 : result.failure.status === "timeout" ? 504 : 502;
+      throw new TableStaffError(status, "PRINT_FAILED", result.failure.message);
+    }
+    return { printed: result.printed };
+  });
+}
+
+// POST /:id/move — the whole party to a free table. { diningAreaId }
+export async function moveSession(req: Request, res: Response) {
+  await run(res, () => moves.moveSession(sessionId(req), validators.parseMoveSession(req.body), staffActor(req)));
+}
+
+// POST /:id/merge — this party joins another table's session and bill. { intoSessionId }
+export async function mergeSession(req: Request, res: Response) {
+  await run(res, () => moves.mergeSession(sessionId(req), validators.parseMerge(req.body), staffActor(req)));
+}
+
+// POST /:id/unmerge — a merged-in table is given back.
+export async function unmergeSession(req: Request, res: Response) {
+  await run(res, () => {
+    validators.parseEmpty(req.body);
+    return moves.unmergeSession(sessionId(req), staffActor(req));
+  });
+}
+
+// POST /:id/split-off — part of the party to a free table with its own bill. { diningAreaId, orderIds?, guestIds? }
+export async function splitOff(req: Request, res: Response) {
+  await run(res, () => moves.splitOffSession(sessionId(req), validators.parseSplitOff(req.body), staffActor(req)));
+}
+
+// POST /api/pos/orders/:id/move-table — one order to another table (SA, PA). { diningAreaId, expectedTableSessionId }
+export async function moveOrderToTable(req: Request, res: Response) {
+  await run(res, () => moves.moveOrderToTable(req.params.id as string, validators.parseMoveOrder(req.body), staffActor(req)));
 }

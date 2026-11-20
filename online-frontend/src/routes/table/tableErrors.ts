@@ -18,7 +18,11 @@ const COMMON: Partial<Record<string, TranslationKey>> = {
   BAD_REQUEST: 'table.e.bad',
   SESSION_FULL: 'table.e.full',
   PIN_LOCKED: 'table.e.pinLocked',
+  BAD_PIN: 'table.e.badPin',
   COOLDOWN: 'table.e.wait',
+  TOO_MANY: 'table.e.tooMany',
+  SESSION_ENDED: 'table.e.ended',
+  SESSION_HAS_OPEN_ORDERS: 'table.e.openOrders',
   // The bill (phase 2)
   BILL_LOCKED: 'table.e.billLocked',
   BILL_CHANGED: 'table.e.billChanged',

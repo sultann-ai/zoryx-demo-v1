@@ -219,3 +219,66 @@ describe("staff Table QR routes: roles", () => {
     })).status).not.toBe(403);
   });
 });
+
+describe("table sync routes (docs/TABLE_SYNC_SPEC.md)", () => {
+  const reachesRoute = (status: number) => status !== 401 && status !== 403;
+
+  it("moving, merging and settling are floor actions; split-off and moving one order are SA/PA only", async () => {
+    for (const [method, path] of [
+      ["POST", "/api/pos/table-sessions/s1/move"],
+      ["POST", "/api/pos/table-sessions/s1/merge"],
+      ["POST", "/api/pos/table-sessions/s1/unmerge"],
+      ["POST", "/api/pos/table-sessions/s1/settle"],
+      ["POST", "/api/pos/table-sessions/s1/bill/collect-cash"],
+      ["POST", "/api/pos/table-sessions/s1/bill/print"],
+    ] as const) {
+      for (const role of ["SUPER_ADMIN", "POS_ADMIN", "ORDER_TAKER"]) {
+        expect(reachesRoute((await call(method, path, { role })).status), `${role} ${path}`).toBe(true);
+      }
+      expect((await call(method, path, { role: "KITCHEN" })).status, path).toBe(403);
+      expect((await call(method, path, { role: "ONLINE_ADMIN" })).status, path).toBe(403);
+    }
+    for (const path of ["/api/pos/table-sessions/s1/split-off", "/api/pos/orders/o1/move-table"]) {
+      expect((await call("POST", path, { role: "ORDER_TAKER" })).status, path).toBe(403);
+      expect(reachesRoute((await call("POST", path, { role: "POS_ADMIN" })).status), path).toBe(true);
+    }
+  });
+
+  it("validates before any work: settle needs a method, a move-table needs the target session it saw", async () => {
+    db.calls = 0;
+    const noMethod = await call("POST", "/api/pos/table-sessions/s1/settle", { role: "POS_ADMIN", body: {} });
+    const noExpectation = await call("POST", "/api/pos/orders/o1/move-table", { role: "POS_ADMIN", body: { diningAreaId: "t2" } });
+    const extra = await call("POST", "/api/pos/table-sessions/s1/merge", { role: "POS_ADMIN", body: { intoSessionId: "s2", force: true } });
+    expect([noMethod.status, noExpectation.status, extra.status]).toEqual([400, 400, 400]);
+    expect(db.calls).toBe(0);
+  });
+
+  it("a dine-in order must say what its sender saw at the table (TABLE_EXPECTATION_REQUIRED), before any query", async () => {
+    db.calls = 0;
+    const pos = await call("POST", "/api/pos/orders", {
+      role: "POS_ADMIN",
+      body: { type: "DINE_IN", paymentMethod: "CASH", diningAreaId: "t1", items: [{ menuItemId: "m1", quantity: 1 }] },
+    });
+    const taker = await call("POST", "/api/pos/orders/submit", {
+      role: "ORDER_TAKER",
+      body: { diningAreaId: "t1", clientRequestId: "c1", items: [{ menuItemId: "m1", quantity: 1 }] },
+    });
+    expect(pos.status).toBe(400);
+    expect(await pos.json()).toMatchObject({ code: "TABLE_EXPECTATION_REQUIRED" });
+    expect(taker.status).toBe(400);
+    expect(await taker.json()).toMatchObject({ code: "TABLE_EXPECTATION_REQUIRED" });
+    expect(db.calls).toBe(0);
+  });
+
+  it("a takeaway or delivery can't have a table, and assign no longer moves tables", async () => {
+    const takeaway = await call("POST", "/api/pos/orders", {
+      role: "POS_ADMIN",
+      body: { type: "DELIVERY", paymentMethod: "CASH", diningAreaId: "t1", deliveryAddress: "x", items: [{ menuItemId: "m1", quantity: 1 }] },
+    });
+    expect(takeaway.status).toBe(400);
+    expect(await takeaway.json()).toMatchObject({ code: "TABLE_NOT_ALLOWED" });
+    const assign = await call("PATCH", "/api/pos/orders/o1/assign", { role: "POS_ADMIN", body: { diningAreaId: "t2" } });
+    expect(assign.status).toBe(400);
+    expect(await assign.json()).toMatchObject({ code: "USE_MOVE_TABLE" });
+  });
+});

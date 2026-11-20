@@ -71,11 +71,26 @@ const tableByKeySelect = {
   area: true,
   isActive: true,
   outOfService: true,
-  tableSessions: { where: { status: TableSessionStatus.OPEN }, select: { id: true, businessDayId: true, joinPin: true } },
+  tableSessions: {
+    where: { status: TableSessionStatus.OPEN },
+    select: { id: true, businessDayId: true, joinPin: true, mergedIntoSessionId: true },
+  },
 } satisfies Prisma.DiningAreaSelect;
 
 async function findTableByQrKey(qrKey: string) {
   return prisma.diningArea.findUnique({ where: { qrKey }, select: tableByKeySelect });
+}
+
+// Table sync R7: a table merged into another one's session is joined through that session — its QR still
+// works, and the guest lands on the shared bill.
+async function sessionForTable(open: { id: string; businessDayId: string; joinPin: string | null; mergedIntoSessionId: string | null } | null) {
+  if (!open?.mergedIntoSessionId) {
+    return open;
+  }
+  return prisma.tableSession.findFirst({
+    where: { id: open.mergedIntoSessionId, status: TableSessionStatus.OPEN },
+    select: { id: true, businessDayId: true, joinPin: true, mergedIntoSessionId: true },
+  });
 }
 
 // What the landing page shows. Never a session id, PIN, guest list or staff name.
@@ -85,7 +100,7 @@ export async function getTableByQrKey(qrKey: string) {
     throw notFound();
   }
   const [settings, dayId] = await Promise.all([getSiteSettings(), activeBusinessDayId()]);
-  const session = table.tableSessions[0] ?? null;
+  const session = await sessionForTable(table.tableSessions[0] ?? null);
   const ordering = computeTableOrdering({
     tableQrEnabled: settings.tableQrEnabled,
     tableActive: table.isActive,
@@ -137,7 +152,7 @@ export async function joinTable(qrKey: string, input: JoinInput, clientIp: strin
     throw notFound();
   }
   const [settings, dayId] = await Promise.all([getSiteSettings(), activeBusinessDayId()]);
-  const session = table.tableSessions[0] ?? null;
+  const session = await sessionForTable(table.tableSessions[0] ?? null);
   // Joining needs exactly what ordering needs: QR switched on, an available, seated table, and the
   // active business day being the session's own (a table left seated past a forced day-end can't be
   // joined; staff close and reseat it).
@@ -344,6 +359,14 @@ export async function getSessionPoll(guest: AuthenticatedGuest) {
       seatedAt: true,
       businessDayId: true,
       diningArea: { select: { name: true, area: true, isActive: true, outOfService: true } },
+      // Table sync R7: tables merged into this session, and the latest move of the party.
+      mergedChildren: { where: { status: TableSessionStatus.OPEN }, select: { diningArea: { select: { name: true } } } },
+      events: {
+        where: { type: TableSessionEventType.TABLE_MOVED },
+        select: { after: true, createdAt: true },
+        orderBy: { createdAt: "desc" },
+        take: 1,
+      },
       guests: { where: { revokedAt: null }, select: { id: true, displayName: true, joinOrder: true }, orderBy: { joinOrder: "asc" } },
       orders: {
         select: {
@@ -427,9 +450,17 @@ export async function getSessionPoll(guest: AuthenticatedGuest) {
     ],
   }));
 
+  const lastMove = session.events[0]?.after as { fromTableName?: unknown } | undefined;
   return {
     version: session.version,
-    table: { name: session.diningArea.name, area: session.diningArea.area },
+    table: {
+      name: session.diningArea.name,
+      area: session.diningArea.area,
+      // The party was moved here from another table: the phone shows "Your table moved to …" once.
+      movedFrom: typeof lastMove?.fromTableName === "string" ? { name: lastMove.fromTableName, at: session.events[0]?.createdAt ?? null } : null,
+    },
+    // Tables merged into this one's bill ("Table 2 + Table 3").
+    joinedTables: session.mergedChildren.map((child) => child.diningArea.name),
     session: { status: session.status, seatedAt: session.seatedAt, ...ordering },
     me: { guestId: guest.id, displayName: guest.displayName, joinOrder: guest.joinOrder },
     guests: session.guests.map((other) => ({ id: other.id, displayName: other.displayName, isMe: other.id === guest.id })),

@@ -14,6 +14,8 @@ export type TableClosedReason = 'qr_disabled' | 'no_business_day' | 'not_seated'
 export interface TableInfo {
   name: string
   area: string | null
+  /** Set on the party's latest move, from the session's TABLE_MOVED event. */
+  movedFrom?: { name: string; at: string | null } | null
 }
 
 /** GET /:qrKey: what an unjoined phone sees. Never a session id, PIN or names. */
@@ -52,6 +54,8 @@ export interface Round {
   orderNumber: number
   guestName: string | null
   isMine: boolean
+  /** Optional placement hint when a future API exposes it; staff rounds remain labelled safely without it. */
+  placedBy?: 'WAITER' | 'COUNTER' | null
   status: RoundStatus
   /** Only a reason staff gave (a rejection); a guest's own cancel has none. */
   cancelReason: string | null
@@ -75,6 +79,8 @@ export interface MyCall {
 export interface TableSessionPoll {
   version: number
   table: TableInfo
+  /** Tables merged into this session. The table title renders as "Table 2 + Table 3". */
+  joinedTables?: string[]
   session: { status: 'OPEN' | 'CLOSED' | 'VOIDED'; seatedAt: string; orderingOpen: boolean; closedReason: TableClosedReason | null }
   me: { guestId: string; displayName: string; joinOrder: number }
   guests: { id: string; displayName: string; isMe: boolean }[]
@@ -215,6 +221,7 @@ export type TableErrorCode =
   | 'NOT_YOUR_SHARE'
   | 'NOT_AWAITING_PAYMENT'
   | 'SESSION_NOT_OPEN'
+  | 'SESSION_HAS_OPEN_ORDERS'
 
 const BASE = '/api/online/table'
 const json = (body: unknown): RequestInit => ({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })

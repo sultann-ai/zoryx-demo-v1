@@ -1,6 +1,8 @@
-import { OrderStatus, Prisma, TableSessionStatus } from "../../../generated/prisma/client";
+import { OrderStatus, PaymentStatus, Prisma, TableSessionStatus } from "../../../generated/prisma/client";
 import { prisma } from "../../config/prisma";
 import { UNPAID_ORDER_WHERE } from "../reports/salesDefinitions";
+import { announceDayEndCloses, closeIdleSessionsForDayEnd, isIdleForDayEnd } from "../table/tableBill.service";
+import { emitTablesUpdated } from "../table/tableNotify";
 
 const BLOCKING_STATUSES: OrderStatus[] = [
   OrderStatus.PENDING,
@@ -75,17 +77,60 @@ export function endBusinessDay(businessDayId: string, closedById: string) {
   });
 }
 
-// Table QR: tables still seated on this day (they block ending it, without force).
+/**
+ * End Day with force (table sync R6): in the same transaction as the day end, every table of the day that
+ * owes nothing is closed; the rest stay open as "from the previous day" until staff settle or close them.
+ */
+export async function endBusinessDayForced(businessDayId: string, closedById: string) {
+  const outcome = await prisma.$transaction(async (tx) => {
+    const tables = await closeIdleSessionsForDayEnd(tx, businessDayId, closedById);
+    const businessDay = await tx.businessDay.update({
+      where: { id: businessDayId },
+      data: { isActive: false, endedAt: new Date(), closedById },
+    });
+    return { businessDay, tables };
+  });
+  await announceDayEndCloses(outcome.tables.closed);
+  // The ones left open now read PREVIOUS_DAY on the map.
+  await emitTablesUpdated(
+    (
+      await prisma.tableSession.findMany({
+        where: { id: { in: outcome.tables.leftOpen.map((entry) => entry.sessionId) } },
+        select: { diningAreaId: true },
+      })
+    ).map((session) => session.diningAreaId),
+  );
+  return {
+    ...outcome.businessDay,
+    closedTableSessions: outcome.tables.closed.map(({ sessionId, tableName }) => ({ id: sessionId, tableName })),
+    leftOpenTableSessions: outcome.tables.leftOpen.map(({ sessionId, tableName }) => ({ id: sessionId, tableName })),
+  };
+}
+
+// Table QR: tables still seated on this day (they block ending it, without force). Table sync R6: each says
+// what it still owes and whether a forced end would close it by itself (canClose).
 export async function getOpenTableSessions(businessDayId: string) {
   const sessions = await prisma.tableSession.findMany({
-    where: { businessDayId, status: TableSessionStatus.OPEN },
-    select: { id: true, seatedAt: true, diningArea: { select: { name: true, area: true } }, _count: { select: { orders: true } } },
+    where: { businessDayId, status: TableSessionStatus.OPEN, mergedIntoSessionId: null },
+    select: {
+      id: true,
+      seatedAt: true,
+      diningArea: { select: { name: true, area: true } },
+      _count: { select: { orders: true } },
+      orders: { where: { status: { not: OrderStatus.CANCELLED }, paymentStatus: { not: PaymentStatus.VERIFIED } }, select: { totalAmount: true } },
+    },
     orderBy: { seatedAt: "asc" },
   });
-  return sessions.map((session) => ({
-    id: session.id,
-    table: session.diningArea,
-    seatedAt: session.seatedAt,
-    orderCount: session._count.orders,
-  }));
+  const result = [];
+  for (const session of sessions) {
+    result.push({
+      id: session.id,
+      table: session.diningArea,
+      seatedAt: session.seatedAt,
+      orderCount: session._count.orders,
+      owed: session.orders.reduce((sum, order) => sum.plus(order.totalAmount), new Prisma.Decimal(0)).toFixed(2),
+      canClose: await isIdleForDayEnd(prisma, session.id),
+    });
+  }
+  return result;
 }

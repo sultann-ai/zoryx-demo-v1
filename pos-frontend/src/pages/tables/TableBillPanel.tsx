@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { getApiErrorMessage } from "../../api/errors";
+import { tableErrorMessage } from "../../lib/tableErrors";
 import type { TableBill } from "../../api/tables";
 import {
   useMarkTableSharePaid,
@@ -39,7 +39,7 @@ function ReceiptActions({ sessionId }: { sessionId: string }) {
     try {
       await print.mutateAsync();
     } catch (reason) {
-      setError(getApiErrorMessage(reason, "Could not print the table receipt."));
+      setError(tableErrorMessage(reason, "Could not print the table receipt."));
     }
   }
 
@@ -77,7 +77,7 @@ export function TableBillPanel({ sessionId, bill, isAdmin }: TableBillPanelProps
       <Card title="Table bill">
         <div className="flex flex-col gap-3">
           <p className="m-0 text-body text-ink-muted">Request one bill for all rounds at this table. Ordering pauses for the table.</p>
-          <Button onClick={() => request.mutate(undefined, { onError: (reason) => setError(getApiErrorMessage(reason, "Could not request the bill.")) })} disabled={request.isPending}>
+          <Button onClick={() => request.mutate(undefined, { onError: (reason) => setError(tableErrorMessage(reason, "Could not request the bill.")) })} disabled={request.isPending}>
             {request.isPending ? "Requesting…" : "Request bill"}
           </Button>
           {error && <p role="alert" className="m-0 text-body text-status-danger-text">{error}</p>}
@@ -92,7 +92,7 @@ export function TableBillPanel({ sessionId, bill, isAdmin }: TableBillPanelProps
 
   function run(action: () => Promise<unknown>) {
     setError(null);
-    void action().catch((reason) => setError(getApiErrorMessage(reason, "Could not update the table bill.")));
+    void action().catch((reason) => setError(tableErrorMessage(reason, "Could not update the table bill.")));
   }
 
   return (

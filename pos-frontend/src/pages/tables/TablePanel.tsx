@@ -1,15 +1,15 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { getApiErrorBody, getApiErrorMessage } from "../../api/errors";
+import { getApiErrorMessage } from "../../api/errors";
 import type { FloorTable, TableSessionOrder } from "../../api/tables";
 import { OrderStatusBadge } from "../../components/OrderStatusBadge";
 import { Button, ConfirmDialog, StatusBadge, buttonClassName } from "../../components/ui";
+import { tableErrorMessage } from "../../lib/tableErrors";
 import { cn } from "../../components/ui/cn";
 import { Icon } from "../../components/shell/icons";
 import {
   isOptimisticSessionId,
-  useCloseTableSession,
   useRegenerateTableQrKey,
   useRotateTablePin,
   useSeatTable,
@@ -21,6 +21,15 @@ import { CallCard } from "./CallCard";
 import { PanelSkeleton } from "./FloorSkeleton";
 import { TABLE_STATE_META, areaLabel, formatElapsed } from "./tableStates";
 import { TableBillPanel } from "./TableBillPanel";
+import {
+  CloseGuardBlock,
+  JoinedToNote,
+  MoveMergeBlock,
+  NewOrderForTableLink,
+  PrintRunningBillButton,
+} from "./TableSessionActions";
+import { orderSourceLabel } from "./tableSessionRules";
+import type { SettledInfo } from "./TableSessionActions";
 
 interface TablePanelProps {
   table: FloorTable;
@@ -63,12 +72,14 @@ export function TablePanel({ table, now, isAdmin, onClose }: TablePanelProps) {
   const seat = useSeatTable();
   const [freshPin, setFreshPin] = useState<string | null>(null);
   const [seatError, setSeatError] = useState<string | null>(null);
+  // Kept here, not in the session block: settling closes the table, which unmounts that block.
+  const [settled, setSettled] = useState<SettledInfo | null>(null);
 
   function handleSeat() {
     setSeatError(null);
     seat.mutate(table.id, {
       onSuccess: (result) => setFreshPin(result.pin),
-      onError: (error) => setSeatError(getApiErrorMessage(error, "Couldn't seat this table")),
+      onError: (error) => setSeatError(tableErrorMessage(error, "Couldn't seat this table")),
     });
   }
 
@@ -95,6 +106,13 @@ export function TablePanel({ table, now, isAdmin, onClose }: TablePanelProps) {
         )}
       </div>
 
+      {settled && (
+        <p role="status" className="m-0 rounded-card border border-status-success bg-status-success-bg px-3 py-2 text-body text-ink">
+          {settled.tableName} is settled and closed.
+          {settled.change && Number(settled.change) > 0 ? ` Change to give: ${formatMoney(settled.change)}.` : ""}
+        </p>
+      )}
+
       {tableCalls.length > 0 && (
         <Section title="Waiter calls">
           <ul className="m-0 p-0 flex list-none flex-col gap-2">
@@ -110,10 +128,23 @@ export function TablePanel({ table, now, isAdmin, onClose }: TablePanelProps) {
         <p className="m-0 text-body text-ink-muted">This table is out of service and can't be seated.</p>
       )}
 
-      {!session && table.state !== "UNAVAILABLE" && <SeatBlock onSeat={handleSeat} isSeating={seat.isPending} error={seatError} />}
+      {!session && table.state !== "UNAVAILABLE" && (
+        <>
+          <SeatBlock onSeat={handleSeat} isSeating={seat.isPending} error={seatError} />
+          <NewOrderForTableLink table={table} isAdmin={isAdmin} />
+        </>
+      )}
 
       {session && (
-        <SessionBlock key={session.id} sessionId={session.id} now={now} isAdmin={isAdmin} freshPin={freshPin} />
+        <SessionBlock
+          key={session.id}
+          table={table}
+          sessionId={session.id}
+          now={now}
+          isAdmin={isAdmin}
+          freshPin={freshPin}
+          onSettled={setSettled}
+        />
       )}
 
       {isAdmin && <RegenerateQrBlock table={table} />}
@@ -124,7 +155,9 @@ export function TablePanel({ table, now, isAdmin, onClose }: TablePanelProps) {
 function SeatBlock({ onSeat, isSeating, error }: { onSeat: () => void; isSeating: boolean; error: string | null }) {
   return (
     <div className="flex flex-col gap-3">
-      <p className="m-0 text-body text-ink-muted">Free. Seat it when guests sit down — their phones can then join from the table's QR.</p>
+      <p className="m-0 text-body text-ink-muted">
+        Free. Seat it when guests sit down — their phones can then join from the table's QR. Placing an order for it seats it too.
+      </p>
       {error && <ErrorText>{error}</ErrorText>}
       <Button onClick={onSeat} disabled={isSeating} className="w-full">
         Seat table
@@ -134,15 +167,19 @@ function SeatBlock({ onSeat, isSeating, error }: { onSeat: () => void; isSeating
 }
 
 function SessionBlock({
+  table,
   sessionId,
   now,
   isAdmin,
   freshPin,
+  onSettled,
 }: {
+  table: FloorTable;
   sessionId: string;
   now: number;
   isAdmin: boolean;
   freshPin: string | null;
+  onSettled: (info: SettledInfo) => void;
 }) {
   const { data, isPending, error } = useTableSession(sessionId);
 
@@ -155,13 +192,21 @@ function SessionBlock({
     );
   }
   if (error || !data) {
-    return <ErrorText>{getApiErrorMessage(error, "Couldn't load this table's session")}</ErrorText>;
+    return <ErrorText>{tableErrorMessage(error, "Couldn't load this table's session")}</ErrorText>;
   }
 
   const activeGuests = data.guests.filter((guest) => !guest.revoked);
+  const isJoined = Boolean(table.session?.joinedTo);
 
   return (
     <div className="flex flex-col gap-4">
+      <JoinedToNote table={table} isAdmin={isAdmin} />
+      {table.session?.fromPreviousDay && (
+        <p role="alert" className="m-0 text-body text-status-danger-text">
+          Still open from the previous business day. No new orders can go on it: settle or close it.
+        </p>
+      )}
+      {!table.session?.fromPreviousDay && <NewOrderForTableLink table={table} isAdmin={isAdmin} />}
       <dl className="m-0 grid grid-cols-2 gap-x-4 gap-y-2 text-body">
         <div>
           <dt className="text-meta text-ink-muted">Seated</dt>
@@ -173,6 +218,12 @@ function SessionBlock({
           <dt className="text-meta text-ink-muted">Waiter</dt>
           <dd className="m-0 truncate">{data.session.waiterStaff?.name ?? "Anyone"}</dd>
         </div>
+        {table.session?.joined && table.session.joined.length > 0 && (
+          <div className="col-span-2">
+            <dt className="text-meta text-ink-muted">Joined tables</dt>
+            <dd className="m-0">{table.session.joined.map((joined) => joined.name).join(", ")} — one bill</dd>
+          </div>
+        )}
       </dl>
 
       <PinBlock sessionId={sessionId} pin={data.session.pin} freshPin={freshPin} />
@@ -206,8 +257,11 @@ function SessionBlock({
         )}
       </Section>
 
+      {data.orders.some((order) => order.status !== "CANCELLED") && <PrintRunningBillButton sessionId={sessionId} />}
+      {!isJoined && <MoveMergeBlock table={table} sessionId={sessionId} />}
       <TableBillPanel sessionId={sessionId} bill={data.bill} isAdmin={isAdmin} />
-      {!data.bill && <CloseBlock sessionId={sessionId} />}
+      {/* A paid bill closes from the bill panel; otherwise this says what's in the way. */}
+      {!isJoined && data.bill?.status !== "PAID" && <CloseGuardBlock detail={data} isAdmin={isAdmin} onSettled={onSettled} />}
     </div>
   );
 }
@@ -228,7 +282,7 @@ function OrderRow({ order, canOpen }: { order: TableSessionOrder; canOpen: boole
           ) : (
             <span>{title}</span>
           )}
-          <span className="truncate text-ink-muted">{order.tableGuest?.displayName ?? "Staff"}</span>
+          <span className="truncate text-ink-muted">{orderSourceLabel(order)}</span>
         </span>
         <span className="text-meta text-ink-muted tabular-nums">
           {itemCount} {itemCount === 1 ? "item" : "items"} · {formatMoney(order.totalAmount)} · {formatTime(order.createdAt)}
@@ -289,47 +343,6 @@ function PinBlock({ sessionId, pin, freshPin }: { sessionId: string; pin: string
   );
 }
 
-function CloseBlock({ sessionId }: { sessionId: string }) {
-  const close = useCloseTableSession();
-  const [isConfirming, setIsConfirming] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  function handleClose() {
-    setError(null);
-    close.mutate(sessionId, {
-      onSuccess: () => setIsConfirming(false),
-      onError: (closeError) => {
-        const body = getApiErrorBody(closeError);
-        const numbers = body?.openOrders?.map((order) => `#${order.orderNumber}`).join(", ");
-        setError(`${getApiErrorMessage(closeError, "Couldn't close this table")}${numbers ? ` (${numbers})` : ""}`);
-      },
-    });
-  }
-
-  return (
-    <div className="flex flex-col gap-2 border-t border-border pt-4">
-      <Button variant="secondary" className="w-full" onClick={() => setIsConfirming(true)}>
-        Close table
-      </Button>
-      <ConfirmDialog
-        isOpen={isConfirming}
-        onClose={() => {
-          setIsConfirming(false);
-          setError(null);
-        }}
-        onConfirm={handleClose}
-        title="Close this table?"
-        message="Guests' phones are signed out and the table shows as free. Every order must be completed or cancelled first."
-        confirmLabel="Close table"
-        confirmingLabel="Closing…"
-        confirmVariant="primary"
-        isConfirming={close.isPending}
-        error={error}
-      />
-    </div>
-  );
-}
-
 function RegenerateQrBlock({ table }: { table: FloorTable }) {
   const regenerate = useRegenerateTableQrKey();
   const [isConfirming, setIsConfirming] = useState(false);
@@ -343,7 +356,7 @@ function RegenerateQrBlock({ table }: { table: FloorTable }) {
         setDone(true);
         setIsConfirming(false);
       },
-      onError: (regenerateError) => setError(getApiErrorMessage(regenerateError, "Couldn't make a new QR code")),
+      onError: (regenerateError) => setError(tableErrorMessage(regenerateError, "Couldn't make a new QR code")),
     });
   }
 
@@ -369,7 +382,7 @@ function RegenerateQrBlock({ table }: { table: FloorTable }) {
         }}
         onConfirm={handleRegenerate}
         title={`New QR code for ${table.name}?`}
-        message="The QR card already printed for this table stops working the moment you confirm: anyone scanning it will see “We could not find this table”. Print the new card right away. Guests already at the table stay signed in."
+        message={`The QR card already printed for this table stops working the moment you confirm: anyone scanning it will see “We could not find this table”. Print the new card right away.${table.session ? " Guests already at the table stay signed in; anyone new needs the new card." : ""}`}
         confirmLabel="Make new QR"
         confirmingLabel="Making…"
         isConfirming={regenerate.isPending}

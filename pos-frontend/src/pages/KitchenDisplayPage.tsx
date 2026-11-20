@@ -183,7 +183,19 @@ export function KitchenDisplayPage() {
       setNoteUpdatedIds((prev) => new Set([...prev].filter((id) => !goneIds.has(id))));
     }
 
+    // Table sync R7: an order (or its whole party) moved to another table — the cards say the new table.
+    function handleTableChanged(payload: { orderId: string; diningArea: { id: string; name: string; area: string | null } }) {
+      setItems((prev) =>
+        prev.map((row) =>
+          row.orderId === payload.orderId
+            ? { ...row, order: { ...row.order, diningArea: { ...(row.order.diningArea ?? {}), ...payload.diningArea } as typeof row.order.diningArea } }
+            : row,
+        ),
+      );
+    }
+
     socket.on("order-item:new", handleNewItems);
+    socket.on("order:table-changed", handleTableChanged);
     socket.on("order-item:note-updated", handleNoteUpdated);
     socket.on("order-item:updated", handleUpdatedItem);
     socket.on("order:cancelled", handleItemsGone);
@@ -192,6 +204,7 @@ export function KitchenDisplayPage() {
 
     return () => {
       socket.off("order-item:new", handleNewItems);
+      socket.off("order:table-changed", handleTableChanged);
       socket.off("order-item:note-updated", handleNoteUpdated);
       socket.off("order-item:updated", handleUpdatedItem);
       socket.off("order:cancelled", handleItemsGone);

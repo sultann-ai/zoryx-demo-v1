@@ -3,15 +3,16 @@ import {
   Prisma,
   StaffRole,
   TableSessionEventType,
+  TableSessionOpenedVia,
   TableSessionStatus,
 } from "../../../generated/prisma/client";
 import { prisma } from "../../config/prisma";
 import { generateJoinPin, generateQrKey } from "../tableGuest/guestToken";
 import { getSiteSettings } from "../siteContent/siteContent.service";
-import { billStateInputs, callCounts, emitTableUpdated, emitToFloor, summariseBill, summariseOrders, touchTableSession } from "./tableNotify";
-import { deriveTableState } from "./tableState";
+import { emitSessionUpdated, emitTablesUpdated, emitTableUpdated, emitToFloor, loadTableStates, touchTableSession } from "./tableNotify";
 import { TableStaffError } from "./tableErrors";
-import { cancelOpenCallsInTransaction, emitCallsCancelled, OPEN_CALL_STATUSES } from "./tableCall.service";
+import { cancelOpenCallsInTransaction, emitCallsCancelled } from "./tableCall.service";
+import { findOpenSessionRow, insertOpenSession, lockTable } from "./tableOccupancy";
 import { closeTable, staffBillView } from "./tableBill.service";
 
 // Staff side of Table QR sessions (docs/TABLE_QR_SPEC.md §3.1, §4.2). Every refusal carries a code the
@@ -83,14 +84,6 @@ export async function seatTable(diningAreaId: string, actor: { id: string; role:
   if (!day) {
     throw new TableStaffError(409, "NO_BUSINESS_DAY", "Start the business day before seating a table");
   }
-  // The usual case answered up front; the partial unique index (below) catches a true race.
-  const alreadyOpen = await prisma.tableSession.findFirst({
-    where: { diningAreaId, status: TableSessionStatus.OPEN },
-    select: { id: true },
-  });
-  if (alreadyOpen) {
-    throw new TableStaffError(409, "TABLE_OCCUPIED", "This table is already seated", { sessionId: alreadyOpen.id });
-  }
 
   // The waiter: as asked; else the table's default (if still usable); else the order taker seating it.
   let waiter: string | null = null;
@@ -112,40 +105,44 @@ export async function seatTable(diningAreaId: string, actor: { id: string; role:
   const settings = await getSiteSettings();
   const pin = settings.tableQrRequirePin ? generateJoinPin() : null;
 
-  let session;
-  try {
-    session = await prisma.$transaction(async (tx) => {
-      const created = await tx.tableSession.create({
-        data: {
+  // The table row lock serialises Seat with every order that could open this table (table sync R2), so the
+  // second of two simultaneous seats waits, then sees the first one's session. The conflict-safe insert is
+  // the backstop for anything that opened a session without the lock.
+  const session = await prisma.$transaction(async (tx) => {
+    const locked = await lockTable(tx, diningAreaId);
+    if (!locked || !locked.isActive || locked.outOfService) {
+      throw new TableStaffError(409, "TABLE_UNAVAILABLE", "This table is out of service");
+    }
+    const open = await findOpenSessionRow(tx, diningAreaId);
+    const createdId = open
+      ? null
+      : await insertOpenSession(tx, {
           diningAreaId,
           businessDayId: day.id,
-          joinPin: pin,
-          waiterStaffId: waiter,
           seatedById: actor.id,
-        },
-        select: { id: true, diningAreaId: true, status: true, seatedAt: true, waiterStaff: { select: { id: true, name: true } } },
+          waiterStaffId: waiter,
+          joinPin: pin,
+          via: TableSessionOpenedVia.SEAT,
+        });
+    if (!createdId) {
+      const winner = open ?? (await findOpenSessionRow(tx, diningAreaId));
+      throw new TableStaffError(409, "TABLE_OCCUPIED", "This table is already seated", {
+        sessionId: winner ? (winner.mergedIntoSessionId ?? winner.id) : null,
       });
-      await recordSessionEvent(tx, {
-        sessionId: created.id,
-        type: TableSessionEventType.SEATED,
-        actorId: actor.id,
-        after: { waiterStaffId: waiter, pin: pin !== null },
-      });
-      return created;
-    });
-  } catch (error) {
-    // The partial unique index: this table already has an OPEN session (two staff seated it at once).
-    if (isUniqueViolation(error)) {
-      const open = await prisma.tableSession.findFirst({
-        where: { diningAreaId, status: TableSessionStatus.OPEN },
-        select: { id: true },
-      });
-      throw new TableStaffError(409, "TABLE_OCCUPIED", "This table is already seated", { sessionId: open?.id ?? null });
     }
-    throw error;
-  }
+    await recordSessionEvent(tx, {
+      sessionId: createdId,
+      type: TableSessionEventType.SEATED,
+      actorId: actor.id,
+      after: { waiterStaffId: waiter, pin: pin !== null },
+    });
+    return tx.tableSession.findUniqueOrThrow({
+      where: { id: createdId },
+      select: { id: true, diningAreaId: true, status: true, seatedAt: true, waiterStaff: { select: { id: true, name: true } } },
+    });
+  });
 
-  emitToFloor("table-session:updated", sessionUpdatedPayload(session));
+  await emitSessionUpdated(session.id);
   await emitTableUpdated(diningAreaId);
   return {
     session: { id: session.id, seatedAt: session.seatedAt, waiter: session.waiterStaff },
@@ -197,7 +194,7 @@ export async function getSessionDetail(id: string) {
 async function loadOpenSession(id: string) {
   const session = await prisma.tableSession.findUnique({
     where: { id },
-    select: { id: true, diningAreaId: true, status: true, joinPin: true, waiterStaffId: true },
+    select: { id: true, diningAreaId: true, status: true, joinPin: true, waiterStaffId: true, mergedIntoSessionId: true },
   });
   if (!session) {
     throw sessionNotFound();
@@ -277,6 +274,38 @@ export async function removeGuest(id: string, guestId: string, actorId: string, 
   return { guest: { id: guest.id, displayName: guest.displayName, revoked: true } };
 }
 
+/**
+ * Table sync R12: a staff member who can no longer be a waiter (deactivated, or moved to a role that doesn't
+ * work the floor) stops being the waiter of every open session — calls then go to everyone, and an order
+ * taker's "your table" cash rule no longer points at them. One WAITER_CHANGED event per session.
+ */
+export async function releaseWaiterFromOpenSessions(staffId: string, actorId: string): Promise<number> {
+  const sessions = await prisma.tableSession.findMany({
+    where: { waiterStaffId: staffId, status: TableSessionStatus.OPEN },
+    select: { id: true, diningAreaId: true, status: true },
+  });
+  for (const session of sessions) {
+    await prisma.$transaction(async (tx) => {
+      const changed = await tx.tableSession.updateMany({
+        where: { id: session.id, waiterStaffId: staffId, status: TableSessionStatus.OPEN },
+        data: { waiterStaffId: null },
+      });
+      if (changed.count > 0) {
+        await recordSessionEvent(tx, {
+          sessionId: session.id,
+          type: TableSessionEventType.WAITER_CHANGED,
+          actorId,
+          reason: "Waiter's account changed",
+          before: { waiterStaffId: staffId },
+          after: { waiterStaffId: null },
+        });
+      }
+    });
+    await emitSessionUpdated(session.id);
+  }
+  return sessions.length;
+}
+
 // ================= Close / void =================
 
 // Closing a table (phase 1 and the phase-2 bill settlement, receipt, idempotent repeat) lives in
@@ -294,7 +323,14 @@ export async function voidSession(
   rejectAwaiting: (orderId: string) => Promise<unknown>,
 ) {
   const session = await loadOpenSession(id);
+  if (session.mergedIntoSessionId) {
+    throw new TableStaffError(409, "SESSION_IS_MERGED", "This table is joined to another table. Unmerge it instead.");
+  }
   const orders = await prisma.order.findMany({ where: { tableSessionId: id }, select: { id: true, status: true } });
+  const childTables = await prisma.tableSession.findMany({
+    where: { mergedIntoSessionId: id, status: TableSessionStatus.OPEN },
+    select: { diningAreaId: true },
+  });
   if (orders.some((order) => order.status !== OrderStatus.CANCELLED && order.status !== OrderStatus.AWAITING_RECEPTION)) {
     throw new TableStaffError(409, "SESSION_HAS_ORDERS", "This table has accepted orders — complete or cancel them, then close it");
   }
@@ -317,103 +353,34 @@ export async function voidSession(
       throw new TableStaffError(409, "SESSION_HAS_ORDERS", "An order for this table changed meanwhile — reload and try again");
     }
     await recordSessionEvent(tx, { sessionId: id, type: TableSessionEventType.VOIDED, actorId, reason });
+    // Tables merged into this one are given back with it (table sync R7).
+    const children = await tx.tableSession.findMany({ where: { mergedIntoSessionId: id, status: TableSessionStatus.OPEN }, select: { id: true } });
+    for (const child of children) {
+      await updateOpenSession(tx, child.id, { status: TableSessionStatus.VOIDED, closedAt: new Date(), closedById: actorId, voidReason: reason, version: { increment: 1 } });
+      await recordSessionEvent(tx, { sessionId: child.id, type: TableSessionEventType.VOIDED, actorId, reason });
+    }
     const cancelledCalls = await cancelOpenCallsInTransaction(tx, id);
     const session = await tx.tableSession.findUniqueOrThrow({ where: { id }, select: { id: true, diningAreaId: true, status: true, closedAt: true, voidReason: true } });
     return { session, cancelledCalls };
   });
   await emitCallsCancelled(voided.cancelledCalls);
-  emitToFloor("table-session:updated", sessionUpdatedPayload(voided.session));
-  await emitTableUpdated(session.diningAreaId);
+  await emitSessionUpdated(id);
+  await emitTablesUpdated([session.diningAreaId, ...childTables.map((child) => child.diningAreaId)]);
   return { session: voided.session };
 }
 
 // ================= Floor map =================
 
 export async function getFloor(area?: string) {
-  const tables = await prisma.diningArea.findMany({
-    where: { isActive: true, ...(area !== undefined ? { area: area === "" ? null : area } : {}) },
-    select: {
-      id: true,
-      name: true,
-      area: true,
-      type: true,
-      capacity: true,
-      layoutX: true,
-      layoutY: true,
-      layoutW: true,
-      layoutH: true,
-      shape: true,
-      rotation: true,
-      outOfService: true,
-      tableSessions: {
-        where: { status: TableSessionStatus.OPEN },
-        select: {
-          id: true,
-          seatedAt: true,
-          waiterStaff: { select: { id: true, name: true } },
-          guests: { where: { revokedAt: null }, select: { id: true } },
-          orders: { select: { status: true, items: { select: { status: true } } } },
-          calls: {
-            where: { status: { in: OPEN_CALL_STATUSES } },
-            select: { id: true, type: true, status: true, createdAt: true, escalatedAt: true },
-            orderBy: { createdAt: "asc" },
-          },
-          bill: { select: { status: true, splitVersion: true, shares: { select: { status: true, splitVersion: true } } } },
-        },
-      },
-    },
-    orderBy: { name: "asc" },
+  const areaFilter = area !== undefined ? { area: area === "" ? null : area } : {};
+  // Active tables, plus any switched-off table that still has an open session (so it can't vanish, R1).
+  const tables = await loadTableStates(prisma, {
+    ...areaFilter,
+    OR: [{ isActive: true }, { tableSessions: { some: { status: TableSessionStatus.OPEN } } }],
   });
   const areas = [...new Set((await prisma.diningArea.findMany({ where: { isActive: true }, select: { area: true } })).map((t) => t.area ?? ""))]
     .sort((a, b) => (a === "" ? 1 : b === "" ? -1 : a.localeCompare(b)));
-
-  return {
-    areas,
-    tables: tables.map((table) => {
-      const session = table.tableSessions[0] ?? null;
-      const counts = summariseOrders(session?.orders ?? []);
-      const bill = summariseBill(session?.bill ?? null);
-      const derived = deriveTableState({
-        outOfService: table.outOfService,
-        hasOpenSession: session !== null,
-        ...billStateInputs(bill),
-        ...callCounts(session?.calls ?? []),
-        ...counts,
-      });
-      const placed = table.layoutX !== null && table.layoutY !== null && table.layoutW !== null && table.layoutH !== null;
-      return {
-        id: table.id,
-        name: table.name,
-        area: table.area,
-        type: table.type,
-        capacity: table.capacity,
-        layout: placed
-          ? { x: table.layoutX, y: table.layoutY, w: table.layoutW, h: table.layoutH, shape: table.shape, rotation: table.rotation }
-          : null,
-        outOfService: table.outOfService,
-        state: derived.state,
-        attention: derived.attention,
-        readyCount: derived.readyCount,
-        session: session
-          ? {
-              id: session.id,
-              seatedAt: session.seatedAt,
-              waiter: session.waiterStaff,
-              guestCount: session.guests.length,
-              awaitingCount: counts.awaitingOrders,
-              openCalls: session.calls.map((call) => ({
-                id: call.id,
-                type: call.type,
-                status: call.status,
-                createdAt: call.createdAt,
-                escalated: call.escalatedAt !== null,
-              })),
-              bill: bill ? { status: bill.status, paid: bill.paid, of: bill.of } : null,
-            }
-          : null,
-      };
-    }),
-  };
+  return { areas, tables };
 }
 
 // ================= Layout =================
@@ -493,5 +460,7 @@ export async function regenerateQrKey(id: string) {
   if (!exists) {
     throw new TableStaffError(404, "NOT_FOUND", "Dining area not found");
   }
-  return { id, qrKey: await assignNewQrKey(id) };
+  // Guests already joined keep their tokens; the POS warns that anyone new needs the new card (table sync R8).
+  const openSession = (await prisma.tableSession.count({ where: { diningAreaId: id, status: TableSessionStatus.OPEN } })) > 0;
+  return { id, qrKey: await assignNewQrKey(id), openSession };
 }

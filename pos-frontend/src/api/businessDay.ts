@@ -23,8 +23,15 @@ export async function startBusinessDay(label?: string): Promise<BusinessDay> {
   return data;
 }
 
-export async function endBusinessDay(force?: boolean): Promise<BusinessDay> {
-  const { data } = await apiClient.post<BusinessDay>(
+// A forced end (table sync R6) also says which open tables closed with the day (they owed nothing) and
+// which were left open — those read "From yesterday" on the map until someone settles or closes them.
+export interface EndedBusinessDay extends BusinessDay {
+  closedTableSessions?: { id: string; tableName: string }[];
+  leftOpenTableSessions?: { id: string; tableName: string }[];
+}
+
+export async function endBusinessDay(force?: boolean): Promise<EndedBusinessDay> {
+  const { data } = await apiClient.post<EndedBusinessDay>(
     "/api/pos/business-day/end",
     force ? { force: true } : {},
   );

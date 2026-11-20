@@ -1,4 +1,5 @@
 import { Router } from "express";
+import * as tableBillController from "../table/tableBill.controller";
 import { StaffRole } from "../../../generated/prisma/client";
 import { requireAuth, requireRole } from "../../common/middlewares/auth";
 import * as orderController from "./order.controller";
@@ -151,6 +152,13 @@ orderRouter.patch(
   requireAuth,
   requireRole(StaffRole.POS_ADMIN, StaffRole.SUPER_ADMIN, StaffRole.ORDER_TAKER),
   orderController.cancelOrder,
+);
+// Table sync R7: one order to another table's session (opened when the table is free).
+orderRouter.post(
+  "/:id/move-table",
+  requireAuth,
+  requireRole(StaffRole.POS_ADMIN, StaffRole.SUPER_ADMIN),
+  tableBillController.moveOrderToTable,
 );
 orderRouter.patch(
   "/:id/assign",

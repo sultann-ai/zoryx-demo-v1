@@ -17,7 +17,15 @@ import { useAuth } from "./AuthContext";
 
 // What the server sends when a table or its session may have changed (§6.2); the table-call:*
 // events have their own handlers below.
-const FLOOR_EVENTS = ["table:updated", "table-session:updated", "table-guest:joined", "table-session:pin-locked", "table-bill:updated"];
+// Table sync adds order:table-changed (an order or a whole party moved to another table).
+const FLOOR_EVENTS = [
+  "table:updated",
+  "table-session:updated",
+  "table-guest:joined",
+  "table-session:pin-locked",
+  "table-bill:updated",
+  "order:table-changed",
+];
 
 // A burst of events (an order accepted moves several items at once) becomes one refetch.
 const COALESCE_MS = 150;
@@ -115,6 +123,8 @@ export function TableCallsProvider({ socket, chime, vibrate = false, toastRegion
         queryClient.invalidateQueries({ queryKey: FLOOR_QUERY_KEY });
         queryClient.invalidateQueries({ queryKey: TABLE_SESSION_QUERY_KEY });
         queryClient.invalidateQueries({ queryKey: TABLE_CALLS_QUERY_KEY });
+        // Order pages show their table and the table's bill, which these same events change.
+        queryClient.invalidateQueries({ queryKey: ["orders", "detail"] });
       }, COALESCE_MS);
     }
 

@@ -26,6 +26,12 @@ export function LineText({ line }: { line: Round['lines'][number] }) {
   )
 }
 
+export function roundPlacedBy(round: Round, t: (key: 'table.round.placedWaiter' | 'table.round.placedCounter' | 'table.round.staff') => string): string {
+  if (round.placedBy === 'COUNTER') return t('table.round.placedCounter')
+  if (round.placedBy === 'WAITER') return t('table.round.placedWaiter')
+  return round.guestName === null ? t('table.round.staff') : round.guestName
+}
+
 /**
  * Where a round is, as a compact track of the four steps (Awaiting reception -> Preparing -> Ready -> Served): done
  * segments filled, the current one in sunflower. The words above it carry the meaning; the track is decoration.
@@ -89,7 +95,7 @@ export function RoundCard({ round, number, open = false }: { round: Round; numbe
             <Fill text={t('table.round.n')} values={{ n: String(number) }} />
             <span className="font-normal text-muted">
               {' · '}
-              {round.isMine ? t('table.you') : (round.guestName ?? t('table.shared'))}
+              {round.isMine ? t('table.you') : roundPlacedBy(round, t)}
               {' · '}
               <span dir="ltr">{formatTime(lang, round.createdAt)}</span>
             </span>

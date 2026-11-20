@@ -10,6 +10,7 @@ import {
   OrderEventType,
   Prisma,
   StaffRole,
+  TableSessionOpenedVia,
 } from "../../../generated/prisma/client";
 import { prisma } from "../../config/prisma";
 import { getIO } from "../../config/socket";
@@ -19,8 +20,9 @@ import { money, recordOrderEvent } from "./orderEvents";
 import { DiscountActor, checkDiscountChange, discountAttribution, loadDiscountCap } from "./discountPolicy";
 import { isPaid } from "../reports/salesDefinitions";
 import { tableOrderChanged } from "../table/tableNotify";
-import { assertNotPaidThroughTableBill, billableOrderWhere, syncTableBillForOrder } from "../table/tableBillGuard";
+import { assertNotOnTableBill, billableOrderWhere, syncTableBill, syncTableBillForOrder } from "../table/tableBillGuard";
 import { TableStaffError } from "../table/tableErrors";
+import { ensureOpenSession, lockTableForOrder, releaseIfIdleForOrder } from "../table/tableOccupancy";
 
 export class NoActiveBusinessDayError extends Error {}
 
@@ -516,6 +518,12 @@ export interface CreateOrderInput {
   // stamped on every line (direct items, deal lines and their exploded items).
   tableSessionId?: string;
   tableGuestId?: string;
+  // Table sync (docs/TABLE_SYNC_SPEC.md R2): a dine-in order with a table and no tableSessionId joins the
+  // table's open session, or opens one. What the caller saw: null = "the table is free", an id = "add to
+  // this session" (a mismatch is a 409 the screen turns into a question); absent = join whatever is open
+  // (internal callers only). placedByRole decides who becomes the new session's waiter.
+  expectedTableSessionId?: string | null;
+  placedByRole?: StaffRole;
   // Checked against the server-priced items+deals (before discount and fee).
   minSubtotal?: Prisma.Decimal;
   // Checked against the server-priced total (including the fee).
@@ -892,9 +900,19 @@ export function priceOrderLines(
   return { orderItemsCreateData, pendingDealLines };
 }
 
-export async function createOrder(input: CreateOrderInput): Promise<OrderWithItems> {
+/** The table session an order opened (table sync R2): shown once on the POS confirmation, PIN included. */
+export interface TableOpened {
+  sessionId: string;
+  pin: string | null;
+}
+
+export async function createOrder(input: CreateOrderInput): Promise<OrderWithItems & { tableOpened: TableOpened | null }> {
   if (input.items.length === 0 && (input.deals ?? []).length === 0) {
     throw new EmptyOrderError();
+  }
+  // Takeaway, delivery and online orders never touch tables (table sync R9).
+  if (input.type !== OrderType.DINE_IN && (input.diningAreaId !== undefined || input.tableSessionId !== undefined)) {
+    throw new TableStaffError(400, "TABLE_NOT_ALLOWED", "Only dine-in orders can have a table.");
   }
 
   const activeBusinessDay = await prisma.businessDay.findFirst({ where: { isActive: true } });
@@ -951,11 +969,30 @@ export async function createOrder(input: CreateOrderInput): Promise<OrderWithIte
   const businessDayId = activeBusinessDay.id;
   const isAwaitingReception = input.status === OrderStatus.AWAITING_RECEPTION;
   const isScheduled = input.scheduledFor !== undefined;
+  // Every dine-in order with a table belongs to the table's open session (table sync R2). A scheduled one
+  // takes its table only when it is released (R2a).
+  const takesTable =
+    input.type === OrderType.DINE_IN && input.diningAreaId !== undefined && input.tableSessionId === undefined && !isScheduled;
+  let tableOpened: TableOpened | null = null;
 
   const order = await prisma.$transaction(async (tx) => {
     // Advisory lock scoped to this business day serializes orderNumber assignment
     // across concurrent requests, closing the race that a plain MAX()+1 read would allow.
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${businessDayId})::bigint)`;
+
+    // After the day lock, before anything is written: the table row lock, then its session (R10 lock order).
+    let tableSessionId = input.tableSessionId;
+    if (takesTable) {
+      const ensured = await ensureOpenSession(tx, {
+        diningAreaId: input.diningAreaId as string,
+        expectedTableSessionId: input.expectedTableSessionId,
+        businessDayId,
+        opener: { staffId: input.placedByStaffId ?? activeBusinessDay.openedById, role: input.placedByRole ?? null },
+        via: TableSessionOpenedVia.STAFF_ORDER,
+      });
+      tableSessionId = ensured.sessionId;
+      tableOpened = ensured.opened ? { sessionId: ensured.sessionId, pin: ensured.pin } : null;
+    }
 
     // After the lock, so a check here (the guest-order rate limits) is exact: two concurrent
     // orders can't both pass a limit that only one of them fits under.
@@ -1000,7 +1037,7 @@ export async function createOrder(input: CreateOrderInput): Promise<OrderWithIte
         ...(input.clientIpHash !== undefined ? { clientIp: { create: { ipHash: input.clientIpHash } } } : {}),
         ...(input.clientRequestId !== undefined ? { clientRequestId: input.clientRequestId } : {}),
         ...(isScheduled ? { status: OrderStatus.SCHEDULED, scheduledFor: input.scheduledFor } : {}),
-        ...(input.tableSessionId !== undefined ? { tableSessionId: input.tableSessionId } : {}),
+        ...(tableSessionId !== undefined ? { tableSessionId } : {}),
         ...guestTag,
         items: { create: orderItemsCreateData.map((item) => ({ ...item, ...guestTag })) },
       },
@@ -1078,6 +1115,15 @@ export async function createOrder(input: CreateOrderInput): Promise<OrderWithIte
       });
     }
 
+    if (tableOpened) {
+      await tx.tableSession.update({ where: { id: tableOpened.sessionId }, data: { openedByOrderId: createdOrder.id } });
+    }
+    // The table's bill now includes this order: an unpaid split is cancelled, and an order on a table whose
+    // shares already have money is refused before anything is kept (SPLIT_HAS_PAYMENTS; spec D3).
+    if (tableSessionId !== undefined) {
+      await syncTableBill(tx, tableSessionId, input.placedByStaffId ?? null);
+    }
+
     // Re-fetch when deal lines were created so the returned order.items includes the
     // exploded rows too — the initial create's `include` only captured the plain items.
     return pendingDealLines.length > 0
@@ -1091,9 +1137,9 @@ export async function createOrder(input: CreateOrderInput): Promise<OrderWithIte
     emitNewOrderItemsByKitchen(order);
   }
   // A SCHEDULED order emits nothing at all here — releaseScheduledOrder does, once, later.
-  await tableOrderChanged(order.tableSessionId);
+  await tableOrderChanged(order.tableSessionId, { sessionOpened: tableOpened !== null });
 
-  return order;
+  return Object.assign(order, { tableOpened: tableOpened as TableOpened | null });
 }
 
 // A standalone script (see backend/scripts/dev-fake-online-order.ts) can call createOrder
@@ -1283,6 +1329,8 @@ async function cancelInTransaction(
   existing: CancellableOrder,
   input: { reason: string; actorId: string },
 ): Promise<OrderWithItems> {
+  // The table's session first (R10), so this can't deadlock with a bill write on the same table.
+  await lockTableForOrder(tx, existing.id);
   const result = await tx.order.updateMany({
     where: { id: existing.id, status: existing.status },
     data: {
@@ -1311,6 +1359,8 @@ async function cancelInTransaction(
   });
   // A table's bill loses this order: its split is cancelled (or the cancel refused if shares are paid).
   await syncTableBillForOrder(tx, existing.id, input.actorId);
+  // The last order of a table an order opened frees the table (R5).
+  await releaseIfIdleForOrder(tx, existing.id, input.actorId);
   return tx.order.findUniqueOrThrow({ where: { id: existing.id }, include: orderInclude });
 }
 
@@ -1396,6 +1446,7 @@ export async function cancelOwnAwaitingOrder(id: string, staffId: string): Promi
   );
   emitSafely(() => getIO().to("pos-admin").emit("order:updated", { orderId: updated.id, orderNumber: updated.orderNumber }));
   emitOrderStatusToTaker(updated);
+  await tableOrderChanged(updated.tableSessionId);
   return updated;
 }
 
@@ -1414,6 +1465,7 @@ export async function cancelTableGuestRound(orderId: string, tableGuestId: strin
     throw new OrderNotAwaitingReceptionError();
   }
   const order = await prisma.$transaction(async (tx) => {
+    await lockTableForOrder(tx, orderId);
     const result = await tx.order.updateMany({
       where: { id: orderId, status: OrderStatus.AWAITING_RECEPTION },
       data: { status: OrderStatus.CANCELLED, cancelledReason: TABLE_GUEST_CANCEL_REASON, cancelledAt: new Date() },
@@ -1546,6 +1598,7 @@ export async function reviewOrderChange(changeId: string, reviewerId: string, ap
     });
     emitOrderCancelled(order, order.items, true);
     emitOrderStatusToTaker({ ...order, status: OrderStatus.CANCELLED });
+    await tableOrderChanged(order.tableSessionId);
     emitSafely(() => getIO().to(`user:${change.requestedById}`).emit("order:change-reviewed", {
       changeId: reviewed.id, orderId: order.id, status: reviewed.status,
     }));
@@ -1581,6 +1634,7 @@ export async function reviewOrderChange(changeId: string, reviewerId: string, ap
     });
     if (totalAmount.isNegative()) throw new DiscountExceedsTotalError();
     const reviewed = await prisma.$transaction(async (tx) => {
+      await lockTableForOrder(tx, order.id);
       await inventoryService.restockForOrderItems(tx, {
         orderId: order.id,
         performedById: reviewerId,
@@ -1650,14 +1704,15 @@ export async function reviewOrderChange(changeId: string, reviewerId: string, ap
     emitSafely(() => getIO().to(`user:${change.requestedById}`).emit("order:change-reviewed", {
       changeId: reviewed.id, orderId: order.id, status: reviewed.status,
     }));
+    await tableOrderChanged(order.tableSessionId);
     return reviewed;
   }
 }
 
+// Waiter and rider only. An order changes table through moveOrderToTable (table sync R7).
 export interface AssignOrderInput {
   waiterId?: string;
   riderId?: string;
-  diningAreaId?: string;
 }
 
 export async function assignOrder(id: string, input: AssignOrderInput): Promise<OrderWithItems> {
@@ -1673,7 +1728,6 @@ export async function assignOrder(id: string, input: AssignOrderInput): Promise<
     data: {
       ...(input.waiterId !== undefined ? { waiterId: input.waiterId } : {}),
       ...(input.riderId !== undefined ? { riderId: input.riderId } : {}),
-      ...(input.diningAreaId !== undefined ? { diningAreaId: input.diningAreaId } : {}),
     },
     include: orderInclude,
   });
@@ -1736,6 +1790,8 @@ export async function computeServerDealPrice(
 export interface SubmitOrderTakerOrderInput {
   placedByStaffId: string;
   diningAreaId: string;
+  // Table sync R2: what the order taker saw at the table (null = free, an id = add to that session).
+  expectedTableSessionId?: string | null;
   items: CreateOrderItemInput[];
   deals?: CreateOrderDealInput[];
   notes?: string;
@@ -1748,7 +1804,7 @@ export interface SubmitOrderTakerOrderInput {
 // conflict, never silently handed back.
 export async function submitOrderTakerOrder(
   input: SubmitOrderTakerOrderInput,
-): Promise<{ order: OrderWithItems; isNew: boolean }> {
+): Promise<{ order: OrderWithItems & { tableOpened?: TableOpened | null }; isNew: boolean }> {
   const existing = await prisma.order.findUnique({ where: { clientRequestId: input.clientRequestId }, include: orderInclude });
   if (existing) {
     if (existing.placedByStaffId !== input.placedByStaffId) {
@@ -1774,7 +1830,9 @@ export async function submitOrderTakerOrder(
       paymentMethod: PaymentMethod.CASH,
       status: OrderStatus.AWAITING_RECEPTION,
       placedByStaffId: input.placedByStaffId,
+      placedByRole: StaffRole.ORDER_TAKER,
       diningAreaId: input.diningAreaId,
+      ...(input.expectedTableSessionId !== undefined ? { expectedTableSessionId: input.expectedTableSessionId } : {}),
       clientRequestId: input.clientRequestId,
       ...(input.notes !== undefined ? { notes: input.notes } : {}),
       items: input.items,
@@ -1892,6 +1950,7 @@ async function replaceOrderContents(
       : ({ changed: false } as const);
 
   return prisma.$transaction(async (tx) => {
+    await lockTableForOrder(tx, orderId);
     const locked = await tx.order.updateMany({
       where: { id: orderId, status: requiredStatus },
       data: { updatedAt: new Date() },
@@ -1970,6 +2029,11 @@ export interface AcceptOrderInput {
   // Required when `discount` changes the order's discount to above 0 (discountPolicy).
   discountReason?: string;
   paymentVerified?: boolean;
+  // Table sync R2a: only for a dine-in order whose table has no session for it yet (a scheduled order
+  // released onto a busy table). null = open the table fresh, an id = add to that session; diningAreaId =
+  // put it on another table instead.
+  expectedTableSessionId?: string | null;
+  diningAreaId?: string;
 }
 
 export class InvalidReceptionActionError extends Error {}
@@ -1981,7 +2045,8 @@ const VALID_PAYMENT_METHODS = Object.values(PaymentMethod);
 // without a database. Whether paymentVerified is actually *required* (an online order
 // paid ONLINE) depends on the order itself — that's acceptOrder's job, not this.
 export function parseAcceptInput(raw: unknown): AcceptOrderInput {
-  const { paymentMethod, discount, discountReason, paymentVerified, ...rest } = (raw ?? {}) as Record<string, unknown>;
+  const { paymentMethod, discount, discountReason, paymentVerified, expectedTableSessionId, diningAreaId, ...rest } = (raw ??
+    {}) as Record<string, unknown>;
   if (Object.keys(rest).length > 0) {
     throw new InvalidReceptionActionError(`accept body has unknown field(s): ${Object.keys(rest).join(", ")}`);
   }
@@ -2008,7 +2073,15 @@ export function parseAcceptInput(raw: unknown): AcceptOrderInput {
   if (discountReason !== undefined && typeof discountReason !== "string") {
     throw new InvalidReceptionActionError("discountReason must be a string");
   }
+  if (expectedTableSessionId !== undefined && expectedTableSessionId !== null && typeof expectedTableSessionId !== "string") {
+    throw new InvalidReceptionActionError("expectedTableSessionId must be a string or null");
+  }
+  if (diningAreaId !== undefined && (typeof diningAreaId !== "string" || diningAreaId.length === 0)) {
+    throw new InvalidReceptionActionError("diningAreaId must be a string");
+  }
   return {
+    ...(expectedTableSessionId !== undefined ? { expectedTableSessionId: expectedTableSessionId as string | null } : {}),
+    ...(diningAreaId !== undefined ? { diningAreaId: diningAreaId as string } : {}),
     ...(paymentMethod !== undefined ? { paymentMethod: paymentMethod as PaymentMethod } : {}),
     ...(discountDecimal !== undefined ? { discount: discountDecimal } : {}),
     ...(discountReason !== undefined ? { discountReason } : {}),
@@ -2088,10 +2161,44 @@ export async function acceptOrder(
   // scheduled POS order) become PENDING — what a directly-placed POS order starts as.
   const nextStatus = existing.source === OrderSource.ONLINE ? OrderStatus.CONFIRMED : OrderStatus.PENDING;
 
+  let tableOpened = false;
   const order = await prisma.$transaction(async (tx) => {
-    const updated = await tx.order.update({
-      where: { id: orderId },
+    await lockTableForOrder(tx, orderId);
+    // Table sync R2a: a dine-in order with a table but no session (a scheduled order released while its
+    // table was busy) takes one now. A free table just opens; a busy one needs reception's decision.
+    let tableData: { tableSessionId: string; diningAreaId: string } | null = null;
+    if (existing.type === OrderType.DINE_IN && existing.diningAreaId !== null && existing.tableSessionId === null) {
+      const diningAreaId = input.diningAreaId ?? existing.diningAreaId;
+      try {
+        const ensured = await ensureOpenSession(tx, {
+          diningAreaId,
+          expectedTableSessionId: input.expectedTableSessionId ?? null,
+          businessDayId: existing.businessDayId,
+          opener: { staffId: acceptedById, role: actorRole },
+          via: existing.scheduledFor !== null ? TableSessionOpenedVia.SCHEDULED_ORDER : TableSessionOpenedVia.STAFF_ORDER,
+        });
+        tableData = { tableSessionId: ensured.sessionId, diningAreaId };
+        tableOpened = ensured.opened;
+      } catch (error) {
+        if (error instanceof TableStaffError && error.code === "TABLE_OCCUPIED" && input.expectedTableSessionId === undefined) {
+          const summary = error.extra.session as { tableName: string };
+          throw new TableStaffError(
+            409,
+            "TABLE_DECISION_NEEDED",
+            `${summary.tableName} is busy. Add this order to its bill, or choose another table.`,
+            error.extra,
+          );
+        }
+        throw error;
+      }
+    } else if (input.expectedTableSessionId !== undefined || input.diningAreaId !== undefined) {
+      throw new InvalidReceptionActionError("A table can only be chosen here for a dine-in order that has none yet");
+    }
+    // Conditional on still waiting at reception: a second accept (or a reject) at the same moment loses.
+    const accepted = await tx.order.updateMany({
+      where: { id: orderId, status: OrderStatus.AWAITING_RECEPTION },
       data: {
+        ...(tableData ?? {}),
         status: nextStatus,
         acceptedById,
         acceptedAt: new Date(),
@@ -2101,8 +2208,14 @@ export async function acceptOrder(
         ...(totalAmount !== undefined ? { totalAmount } : {}),
         ...(isOnlinePaid ? { paymentStatus: PaymentStatus.VERIFIED, paymentVerifiedById: acceptedById } : {}),
       },
-      include: orderInclude,
     });
+    if (accepted.count === 0) {
+      throw new OrderNotAwaitingReceptionError();
+    }
+    if (tableOpened && tableData) {
+      await tx.tableSession.update({ where: { id: tableData.tableSessionId }, data: { openedByOrderId: orderId } });
+    }
+    const updated = await tx.order.findUniqueOrThrow({ where: { id: orderId }, include: orderInclude });
 
     await inventoryService.deductForOrderItems(tx, {
       orderId,
@@ -2153,7 +2266,7 @@ export async function acceptOrder(
     }
   });
   emitOrderStatusToTaker(order);
-  await tableOrderChanged(order.tableSessionId);
+  await tableOrderChanged(order.tableSessionId, { sessionOpened: tableOpened });
 
   return order;
 }
@@ -2193,8 +2306,10 @@ export async function rejectOrder(orderId: string, input: RejectOrderInput, acto
   }
 
   const order = await prisma.$transaction(async (tx) => {
-    const rejected = await tx.order.update({
-      where: { id: orderId },
+    await lockTableForOrder(tx, orderId);
+    // Conditional on still waiting at reception: an accept at the same moment wins or loses cleanly.
+    const result = await tx.order.updateMany({
+      where: { id: orderId, status: OrderStatus.AWAITING_RECEPTION },
       data: {
         status: OrderStatus.CANCELLED,
         cancelledReason: input.reason,
@@ -2202,8 +2317,11 @@ export async function rejectOrder(orderId: string, input: RejectOrderInput, acto
         cancelledById: actorId,
         ...(input.paymentRejected ? { paymentStatus: PaymentStatus.REJECTED } : {}),
       },
-      include: orderInclude,
     });
+    if (result.count === 0) {
+      throw new OrderNotAwaitingReceptionError();
+    }
+    const rejected = await tx.order.findUniqueOrThrow({ where: { id: orderId }, include: orderInclude });
     await recordOrderEvent(tx, {
       orderId,
       actorId,
@@ -2213,6 +2331,8 @@ export async function rejectOrder(orderId: string, input: RejectOrderInput, acto
       after: { status: rejected.status, paymentStatus: rejected.paymentStatus },
     });
     await syncTableBillForOrder(tx, orderId, actorId);
+    // A rejected first order frees the table it opened (R5).
+    await releaseIfIdleForOrder(tx, orderId, actorId);
     return rejected;
   });
 
@@ -2248,12 +2368,13 @@ export async function markOrderDelivered(orderId: string, actorId: string | null
   if (!DELIVERABLE_STATUSES.includes(existing.status)) {
     throw new OrderNotDeliverableError(existing.status);
   }
-  await assertNotPaidThroughTableBill(prisma, orderId);
-
-  // Conditional on the status we just read, so a concurrent cancel can't be overwritten.
-  const completed = await prisma.$transaction((tx) =>
-    completeInTransaction(tx, existing, { actorId, allowedStatuses: DELIVERABLE_STATUSES, via: "delivered" }),
-  );
+  // Conditional on the status we just read, so a concurrent cancel can't be overwritten. A table's order is
+  // finished through its bill only (table sync R4), checked under the table's lock.
+  const completed = await prisma.$transaction(async (tx) => {
+    await lockTableForOrder(tx, orderId);
+    await assertNotOnTableBill(tx, orderId);
+    return completeInTransaction(tx, existing, { actorId, allowedStatuses: DELIVERABLE_STATUSES, via: "delivered" });
+  });
   if (!completed) {
     const now = await prisma.order.findUnique({ where: { id: orderId }, select: { status: true } });
     throw new OrderNotDeliverableError(now?.status ?? existing.status);
@@ -2413,13 +2534,14 @@ export async function completeOrder(orderId: string, actorId: string): Promise<O
   if (!COMPLETABLE_STATUSES.includes(existing.status)) {
     throw new OrderNotCompletableError(existing.status);
   }
-  await assertNotPaidThroughTableBill(prisma, orderId);
-  if (!isPaid(existing)) {
-    throw new OrderUnpaidError();
-  }
-  const completed = await prisma.$transaction((tx) =>
-    completeInTransaction(tx, existing, { actorId, allowedStatuses: COMPLETABLE_STATUSES, via: "complete" }),
-  );
+  const completed = await prisma.$transaction(async (tx) => {
+    await lockTableForOrder(tx, orderId);
+    await assertNotOnTableBill(tx, orderId);
+    if (!isPaid(existing)) {
+      throw new OrderUnpaidError();
+    }
+    return completeInTransaction(tx, existing, { actorId, allowedStatuses: COMPLETABLE_STATUSES, via: "complete" });
+  });
   if (!completed) {
     const now = await prisma.order.findUnique({ where: { id: orderId }, select: { status: true } });
     throw new OrderNotCompletableError(now?.status ?? existing.status);
@@ -2582,7 +2704,6 @@ export async function updatePaymentStatus(
   if (!existing) {
     throw new OrderNotFoundError();
   }
-  await assertNotPaidThroughTableBill(prisma, id);
   if (existing.paymentMethod !== PaymentMethod.CASH) {
     throw new NotCashPaymentError();
   }
@@ -2624,6 +2745,9 @@ export async function updatePaymentStatus(
 
   const actorId = options?.actorId ?? null;
   const order = await prisma.$transaction(async (tx) => {
+    // A table's orders are paid through the table's bill only (table sync R4), checked under the table's lock.
+    await lockTableForOrder(tx, id);
+    await assertNotOnTableBill(tx, id);
     const updated = await tx.order.update({
       where: { id },
       data: {
@@ -2747,6 +2871,7 @@ export async function addOrderItems(orderId: string, input: AddOrderItemsInput):
   const addedTotal = newItemsData.reduce((sum, item) => sum.plus(item.subtotal), new Prisma.Decimal(0));
 
   const { updatedOrder, createdItems } = await prisma.$transaction(async (tx) => {
+    await lockTableForOrder(tx, orderId);
     const created: OrderWithItems["items"] = [];
     for (const itemData of newItemsData) {
       const row = await tx.orderItem.create({
@@ -2830,6 +2955,7 @@ export async function removeOrderItem(orderId: string, itemId: string, performed
   }
 
   const updatedOrder = await prisma.$transaction(async (tx) => {
+    await lockTableForOrder(tx, orderId);
     await tx.orderItem.delete({ where: { id: itemId } });
 
     const totals = await tx.order.update({
@@ -2921,6 +3047,8 @@ export async function updateOrderItemNote(orderId: string, itemId: string, notes
   const updated = await prisma.order.findUniqueOrThrow({ where: { id: orderId }, include: orderInclude });
   if (changed) {
     emitNoteUpdatedToKitchens(updated, new Set([itemId]));
+    // The guests' poll shows notes (table sync D8).
+    await tableOrderChanged(updated.tableSessionId);
   }
   return updated;
 }
@@ -2953,6 +3081,7 @@ export async function updateOrderDealLineNote(
   if (changed) {
     const explodedIds = updated.items.filter((item) => item.dealOrderLineId === dealLineId).map((item) => item.id);
     emitNoteUpdatedToKitchens(updated, new Set(explodedIds));
+    await tableOrderChanged(updated.tableSessionId);
   }
   return updated;
 }
@@ -2975,15 +3104,61 @@ export async function releaseScheduledOrder(
   options: { dueBy?: Date; now?: Date } = {},
 ): Promise<OrderWithItems | null> {
   const now = options.now ?? new Date();
-  const { order } = await transitionScheduledOrder(
+  const { order: released } = await transitionScheduledOrder(
     orderId,
     { status: OrderStatus.AWAITING_RECEPTION, releasedAt: now },
     options.dueBy !== undefined ? { scheduledFor: { lte: options.dueBy } } : {},
   );
+  const order = released ? await attachReleasedOrder(released) : null;
   if (order) {
     emitSafely(() => getIO().to("pos-admin").emit("order:submitted", buildSubmittedPayload(order)));
   }
   return order;
+}
+
+/**
+ * Table sync R2a: a released dine-in order takes its table now when the table is free. When it is busy (or
+ * unavailable, or still held from an earlier day) the order stays unattached and reception decides at accept
+ * (TABLE_DECISION_NEEDED). Its own transaction, after the release committed, so the lock order holds and a
+ * table problem can never stop a release.
+ */
+async function attachReleasedOrder(order: OrderWithItems): Promise<OrderWithItems> {
+  if (order.type !== OrderType.DINE_IN || order.diningAreaId === null || order.tableSessionId !== null || order.placedByStaffId === null) {
+    return order;
+  }
+  const diningAreaId = order.diningAreaId;
+  const placedByStaffId = order.placedByStaffId;
+  let attached: { sessionId: string; opened: boolean };
+  try {
+    attached = await prisma.$transaction(async (tx) => {
+      const ensured = await ensureOpenSession(tx, {
+        diningAreaId,
+        expectedTableSessionId: null,
+        businessDayId: order.businessDayId,
+        opener: { staffId: placedByStaffId, role: null },
+        via: TableSessionOpenedVia.SCHEDULED_ORDER,
+      });
+      const updated = await tx.order.updateMany({
+        where: { id: order.id, tableSessionId: null, status: OrderStatus.AWAITING_RECEPTION },
+        data: { tableSessionId: ensured.sessionId },
+      });
+      if (updated.count === 0) {
+        // Accepted or cancelled in the meantime: leave the table alone (this rolls the session back too).
+        throw new TableStaffError(409, "ORDER_CHANGED", "The order changed meanwhile");
+      }
+      if (ensured.opened) {
+        await tx.tableSession.update({ where: { id: ensured.sessionId }, data: { openedByOrderId: order.id } });
+      }
+      return { sessionId: ensured.sessionId, opened: ensured.opened };
+    });
+  } catch (error) {
+    if (!(error instanceof TableStaffError)) {
+      console.error(`[scheduled] could not seat released order #${order.orderNumber} at its table`, error);
+    }
+    return order;
+  }
+  await tableOrderChanged(attached.sessionId, { sessionOpened: attached.opened });
+  return prisma.order.findUniqueOrThrow({ where: { id: order.id }, include: orderInclude });
 }
 
 // The single primitive behind every scheduled-order action (release, reschedule, cancel):
@@ -3036,10 +3211,11 @@ export async function releaseDueScheduledOrders(now: Date = new Date()): Promise
 // "Release now" from the Scheduled list / order detail / ending the day.
 export async function releaseScheduledOrderNow(orderId: string): Promise<OrderWithItems> {
   const now = new Date();
-  const { order, exists } = await transitionScheduledOrder(orderId, {
+  const { order: released, exists } = await transitionScheduledOrder(orderId, {
     status: OrderStatus.AWAITING_RECEPTION,
     releasedAt: now,
   });
+  const order = released ? await attachReleasedOrder(released) : null;
   if (!order) {
     throw exists ? new OrderNotScheduledError() : new OrderNotFoundError();
   }

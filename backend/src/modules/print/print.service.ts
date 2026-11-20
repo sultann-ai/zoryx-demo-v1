@@ -69,7 +69,9 @@ function isTableReceiptSnapshot(value: unknown): value is TableReceiptSnapshot {
 
 const receiptText = (value: string) => value.length > MAX_TEXT_LENGTH ? `${value.slice(0, MAX_TEXT_LENGTH - 1)}…` : value;
 
-export function buildTableReceiptPrintDoc(receipt: unknown): PrintDoc {
+// `final: false` prints the running bill before payment (table sync R13): "BILL — NOT A RECEIPT", no shares.
+export function buildTableReceiptPrintDoc(receipt: unknown, options: { final?: boolean } = {}): PrintDoc {
+  const final = options.final !== false;
   if (!isTableReceiptSnapshot(receipt)) {
     throw new Error("Stored table receipt snapshot is invalid");
   }
@@ -79,6 +81,7 @@ export function buildTableReceiptPrintDoc(receipt: unknown): PrintDoc {
     ...(receipt.shop.phone ? [{ t: "text" as const, text: receiptText(`Tel: ${receipt.shop.phone}`), align: "center" as const }] : []),
     ...(receipt.shop.addressEn ? [{ t: "text" as const, text: receiptText(receipt.shop.addressEn), align: "center" as const }] : []),
     { t: "rule" as const, style: "double" as const },
+    ...(final ? [] : [{ t: "text" as const, text: "BILL - NOT A RECEIPT", align: "center" as const, bold: true }]),
     { t: "text" as const, text: receiptText(receipt.table.area ? `${receipt.table.name} — ${receipt.table.area}` : receipt.table.name), align: "center" as const, bold: true },
     { t: "text" as const, text: new Date(receipt.issuedAt).toLocaleString(), align: "center" as const },
     { t: "rule" as const },
@@ -96,7 +99,12 @@ export function buildTableReceiptPrintDoc(receipt: unknown): PrintDoc {
   for (const share of receipt.shares) {
     blocks.push({ t: "row", left: receiptText(`${share.label}${share.method ? ` (${share.method === "CASH" ? "Cash" : "Online"})` : ""}`), right: receiptText(share.amount) });
   }
-  blocks.push({ t: "text", text: "Payment Confirmed", align: "center", bold: true }, { t: "cut" });
+  blocks.push(
+    final
+      ? { t: "text", text: "Payment Confirmed", align: "center", bold: true }
+      : { t: "text", text: "Pay at the counter or from your phone", align: "center" },
+    { t: "cut" },
+  );
   return { blocks };
 }
 

@@ -8,7 +8,7 @@ import { CategoryChip } from '../../components/ui/Chip'
 import { formatRs } from '../../lib/format'
 import { useT } from '../../i18n'
 import { Avatar } from './GuestAvatars'
-import { LineText } from './RoundCard'
+import { LineText, roundPlacedBy } from './RoundCard'
 import { tablePath, useTable } from './TableContext'
 import { ROUND_LABEL } from './roundStatus'
 
@@ -42,10 +42,13 @@ export default function TableOrders() {
       let group = groups.get(key)
       if (!group) {
         const guest = poll.guests.find((g) => g.id === key)
+        const staffRound = round.guestName === null && key === SHARED
         group = {
           key,
           // A guest staff removed is no longer in the list: their round still carries the name.
-          name: key === SHARED ? t('table.shared') : (guest?.displayName ?? round.guestName ?? t('table.shared')),
+            name: key === SHARED
+              ? (staffRound ? roundPlacedBy(round, t) : t('table.shared'))
+              : (guest?.displayName ?? round.guestName ?? t('table.shared')),
           me: guest?.isMe ?? false,
           index: guestIndex.get(key) ?? poll.guests.length,
           lines: [],

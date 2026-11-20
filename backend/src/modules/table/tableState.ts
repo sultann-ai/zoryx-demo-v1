@@ -1,9 +1,11 @@
 // The floor map's state for one table (docs/TABLE_QR_SPEC.md §3.7). Pure: every input is read by
 // the caller, so this is unit-testable and the same answer goes to GET /tables/floor and to every
-// "table:updated" emit. The first matching row wins.
+// "table:updated" emit. The first matching row wins. Table sync (docs/TABLE_SYNC_SPEC.md R1) adds
+// PREVIOUS_DAY, right after EMPTY: an open session from a business day that is over.
 
 export type TableState =
   | "UNAVAILABLE"
+  | "PREVIOUS_DAY"
   | "EMPTY"
   | "PAYING"
   | "BILL_REQUESTED"
@@ -17,6 +19,9 @@ export type TableAttention = null | "OPEN" | "ESCALATED";
 export interface TableStateInput {
   outOfService: boolean;
   hasOpenSession: boolean;
+  // Table sync (R6): the open session belongs to a business day that is no longer the active one. False
+  // when there is no open session.
+  fromPreviousDay?: boolean;
   // Phase 2 (bill). Zero / false until the bill exists.
   billRequested: boolean;
   sharesPaidOrSubmitted: number;
@@ -53,6 +58,10 @@ export function deriveTableState(input: TableStateInput): DerivedTableState {
   }
   if (!input.hasOpenSession) {
     return result("EMPTY");
+  }
+  // Left open past a (forced) day end: nobody may add to it until staff settle or close it.
+  if (input.fromPreviousDay) {
+    return result("PREVIOUS_DAY");
   }
   if (input.billRequested && input.sharesPaidOrSubmitted > 0) {
     return result("PAYING");
